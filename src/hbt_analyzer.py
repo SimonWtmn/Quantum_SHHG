@@ -56,7 +56,7 @@ class HBTAnalyzer:
         ax.set_title(f"Integration Window Sweep: {physical_name}")
         ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
         ax.set_ylabel(r"$g^{(2)}(0)$")
-        ax.legend()
+        ax.legend(loc="best")
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.show()
@@ -112,12 +112,73 @@ class HBTAnalyzer:
         ax.set_title(f"Cauchy-Schwarz R Parameter Sweep\nCross: [{name_cross}] $\mid$ Autos: [{name_a1}], [{name_a2}]", fontsize=12)
         ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
         ax.set_ylabel(r"$R$ Parameter")
-        ax.legend()
+        ax.legend(loc="best")
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.show()
         
         return fig, ax
+    
+
+
+    def plot_g2_grid(self, tau_min=0.3, tau_max=30.0, step=0.6, num_side_peaks=3):
+        """
+        Generates a 4x3 grid of g2 sweeps for all cross-combinations of H3, H4, and H5.
+        Automatically maps channels based on the internal configuration.
+        """
+        tau_in_ns = np.arange(tau_min, tau_max, step)
+        
+        inv_map = {v: k for k, v in self.measure.channel_map.items()}
+        
+        rows = ['TT', 'TR', 'RT', 'RR']
+        cols = [('3', '4'), ('3', '5'), ('4', '5')]
+        
+        fig, axes = plt.subplots(4, 3, figsize=(18, 16), dpi=300)
+        
+        for i, row in enumerate(rows):
+            for j, (hA, hB) in enumerate(cols):
+                ax = axes[i, j]
+                
+                try:
+                    ch1 = inv_map[f"H{hA}{row[0]}"] # e.g., if hA='3', row[0]='T' -> 'H3T'
+                    ch2 = inv_map[f"H{hB}{row[1]}"] # e.g., if hB='4', row[1]='R' -> 'H4R'
+                except KeyError as e:
+                    print(f"Skipping subplot {hA}{row[0]}-{hB}{row[1]}: Channel {e} not found.")
+                    continue
+                
+                g2_delay = []
+                g2_direct = []
+                
+                for tau in tau_in_ns:
+                    g2_del = self.measure.compute_g2_delay(ch1, ch2, tau, num_side_peaks=num_side_peaks)
+                    g2_dir = self.measure.compute_g2_direct(ch1, ch2, tau)
+                    
+                    g2_delay.append(g2_del)
+                    g2_direct.append(g2_dir)
+
+                valid_g2 = [g for g in g2_delay + g2_direct if not np.isnan(g)]
+                y_top = max(valid_g2) * 1.1 if valid_g2 else 2.5
+
+                ax.axhspan(0, 1, color='#2ecc71', alpha=0.1)                # Antibunching
+                ax.axhspan(1, 2, color='#f1c40f', alpha=0.1)                # Bunching
+                ax.axhspan(2, y_top, color='#e74c3c', alpha=0.1)            # Super-bunching
+                ax.axhline(y=1, color='#27ae60', linestyle='--', alpha=0.9) # Coherent limit
+                ax.plot(tau_in_ns, g2_delay, marker='o', linestyle='-', color='navy', markersize=5, alpha=0.8, label='Delay (Method A)' if i==0 and j==0 else "")
+                ax.plot(tau_in_ns, g2_direct, marker='s', linestyle='-', color='#c0392b', markersize=5, alpha=0.8, label='Direct (Method B)' if i==0 and j==0 else "") 
+                
+                ax.set_ylim(0, y_top)
+                ax.set_xlim(tau_min, tau_max)
+                ax.set_title(f"$g^{{(2)}}_{{{hA}{hB}}}$ ({row})", fontsize=13)
+                ax.grid(True, alpha=0.3)
+                if i == 3: ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
+                if j == 0: ax.set_ylabel(r"$g^{(2)}(0)$")
+
+        fig.legend(loc='upper center', bbox_to_anchor=(0.5, 0.99), ncol=2)
+        plt.suptitle('Cross-Correlation $g^{(2)}$ Grid: Harmonics 3, 4, 5', fontsize=18, y=1.01)
+        plt.tight_layout()
+        plt.show()
+        
+        return fig, axes
     
 
 
@@ -155,7 +216,6 @@ class HBTAnalyzer:
         
         fig, axes = plt.subplots(4, 3, figsize=(18, 16), dpi=300)
         
-        print("Calculating cross-correlations and plotting grid...")
         for i, row in enumerate(rows):
             for j, (hA, hB) in enumerate(cols):
                 ax = axes[i, j]
@@ -208,3 +268,42 @@ class HBTAnalyzer:
         plt.show()
         
         return fig, axes
+    
+
+
+    def compare_filter_runs(self, run_narrow, run_wide, c1, c2, tau_min=0.3, tau_max=30.0, step=0.6, num_side_peaks=3):
+        """
+        Compares the g2_direct sweep for two different datasets 
+        to test for spectral-jitter-induced intensity noise (FM-to-AM conversion).
+        """
+        tau_in_ns = np.arange(tau_min, tau_max, step)
+        g2_narrow = []
+        g2_wide = []
+        
+        print("Calculating sweeps for filter comparison...")
+        for tau in tau_in_ns:
+            g2_narrow.append(run_narrow.compute_g2_direct(c1, c2, tau))
+            g2_wide.append(run_wide.compute_g2_direct(c1, c2, tau))
+
+        key = run_narrow._get_channel_key(c1, c2)
+        physical_name = run_narrow._get_physical_name(c1, c2)
+
+        fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
+
+        ax.axhspan(0.95, 1.05, color='#2ecc71', alpha=0.1)
+        ax.axhline(y=1, color='#27ae60', linestyle='--', alpha=0.9)
+
+        ax.plot(tau_in_ns, g2_narrow, marker='o', linestyle='-', color='#e74c3c', markersize=5, alpha=0.8, label=r'Narrow Filter (e.g., FBH700-10)')
+        ax.plot(tau_in_ns, g2_wide, marker='s', linestyle='-', color='#2980b9', markersize=5, alpha=0.8, label=r'Wide Filter (e.g., FBH700-40)')
+        
+        ax.set_ylim(bottom=0)
+        ax.set_xlim(left=0, right=tau_max)
+        ax.set_title(f"Spectral Stability Filter Test: {physical_name}")
+        ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
+        ax.set_ylabel(r"$g^{(2)}_{direct}(0)$")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+        
+        return fig, ax

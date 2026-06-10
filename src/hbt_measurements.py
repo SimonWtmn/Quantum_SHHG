@@ -20,9 +20,8 @@ plt.rcParams.update({
 class HBTMeasurement:
     def __init__(self, filepath):
         self.filepath = filepath
-        with open(filepath, 'rb') as f:
-            self.data = pickle.load(f)
-
+        
+        # 1. File format agnosticism (Strictly handle the routing here)
         if filepath.endswith('.pkl'):
             with open(filepath, 'rb') as f:
                 self.data = pickle.load(f)
@@ -32,10 +31,12 @@ class HBTMeasurement:
         else:
             raise ValueError(f"Unsupported file format for {filepath}. Use .pkl or .json")
 
+        # 2. Extract hardware parameters
         self.tau_res_ps = self.data['Parameters']['binwidth']
         self.bins = self.data['Parameters']['bins']
         self.duration = self.data['Parameters']['duration'] 
 
+        # 3. Create channel mapping
         channels = self.data['Parameters']['channels']
         modes = self.data['Parameters']['mode_on_channel']
         self.channel_map = dict(zip(channels, modes))
@@ -64,6 +65,16 @@ class HBTMeasurement:
         name1 = self.channel_map.get(c1, f"Ch{c1}")
         name2 = self.channel_map.get(c2, f"Ch{c2}")
         return f"{name1}, {name2}"
+    
+    def get_ch(self, physical_name):
+        """
+        Reverse lookup: converts a physical string (e.g., 'H4R') into its 
+        actual hardware channel integer for this specific file.
+        """
+        inv_map = {v: k for k, v in self.channel_map.items()}
+        if physical_name not in inv_map:
+            raise KeyError(f"Detector '{physical_name}' not found in this file. Available: {list(inv_map.keys())}")
+        return inv_map[physical_name]
 
 
 
@@ -219,7 +230,7 @@ class HBTMeasurement:
 
         fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
         ax.step(delta_t_ns, counts_y, where='mid', color='#2c3e50', lw=1.2, label='Coincidences')
-        ax.fill_between(delta_t_ns, counts_y, step='mid', color='#3498db', alpha=0.3, label='Peak Area')
+        ax.fill_between(delta_t_ns, counts_y, step='mid', color='#3498db', alpha=0.3)
 
         if tau_in_ns is not None:
             window_mask = (delta_t_ns >= peak_center - tau_in_ns/2) & (delta_t_ns <= peak_center + tau_in_ns/2)
