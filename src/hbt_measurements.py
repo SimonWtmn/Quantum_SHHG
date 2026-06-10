@@ -1,4 +1,5 @@
 import pickle
+import json
 import numpy as np 
 import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
@@ -22,6 +23,15 @@ class HBTMeasurement:
         with open(filepath, 'rb') as f:
             self.data = pickle.load(f)
 
+        if filepath.endswith('.pkl'):
+            with open(filepath, 'rb') as f:
+                self.data = pickle.load(f)
+        elif filepath.endswith('.json'):
+            with open(filepath, 'r') as f:
+                self.data = json.load(f)
+        else:
+            raise ValueError(f"Unsupported file format for {filepath}. Use .pkl or .json")
+
         self.tau_res_ps = self.data['Parameters']['binwidth']
         self.bins = self.data['Parameters']['bins']
         self.duration = self.data['Parameters']['duration'] 
@@ -31,7 +41,20 @@ class HBTMeasurement:
         self.channel_map = dict(zip(channels, modes))
 
     def _get_channel_key(self, c1, c2):
-        return f"({c1}, {c2})"
+        c_min = min(c1, c2)
+        c_max = max(c1, c2)
+        keys_to_try = [
+            f"({c_min}, {c_max})",   # String with space
+            f"({c_min},{c_max})",    # String without space
+            (c_min, c_max),          # Actual Python tuple
+            f"[{c_min}, {c_max}]",   # Stringified list
+            f"[{c_min},{c_max}]"     # Stringified list without space
+        ]
+        for k in keys_to_try:
+            if k in self.data['Correlation']:
+                return k
+        available_keys = list(self.data['Correlation'].keys())[:5]
+        raise KeyError(f"Could not find correlation data for sorted pair ({c_min}, {c_max}). First few keys in file: {available_keys}...")
     
     def _get_physical_name(self, c1, c2):
         """
@@ -168,7 +191,7 @@ class HBTMeasurement:
 
     # ---------------- Visualization Method ----------------
 
-    def plot_correlation(self, c1, c2, xlim=None, show_shift=False, laser_rep_rate_hz=None, tau_in_ns=None):
+    def plot_correlation(self, c1, c2, xlim=None, show_shift=True, laser_rep_rate_hz=None, tau_in_ns=None):
         """
         Plots the coincidence counts against Delta t. 
         If show_shift is True, calculates and displays the t0 electronic delay.
@@ -202,7 +225,7 @@ class HBTMeasurement:
             window_mask = (delta_t_ns >= peak_center - tau_in_ns/2) & (delta_t_ns <= peak_center + tau_in_ns/2)
             ax.fill_between(delta_t_ns, np.max(counts_y), step='mid', where=window_mask, color='#e74c3c', alpha=0.6, label=r'Integrated Counts ($\tau_{in}$)')
 
-        ax.set_title(f"Correlation Analysis: {physical_name}  {key}")
+        ax.set_title(f"Correlation Analysis: {physical_name}")
         ax.set_xlabel("$\Delta t$ (ns)") 
         ax.set_ylabel(f"$N_{{{physical_name}}} \\times 10^3$")
 
