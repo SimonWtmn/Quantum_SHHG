@@ -61,6 +61,8 @@ class HBTMeasurement:
         channels = self.data['Parameters']['channels']
         modes = self.data['Parameters']['mode_on_channel']
         self.channel_map = dict(zip(channels, modes))
+        self._rep_cache = {}
+        self._t0_cache = {}
         
         self._parse_filename_metadata()
 
@@ -88,7 +90,6 @@ class HBTMeasurement:
         self.run_number = f"Run {num_match.group(1)}" if num_match else "Run 1"
         
         # Extract Crystal/Material
-        parts = stem.split('_')
         self.material = self.data.get('Parameters', {}).get('material')
 
     def _get_channel_key(self, c1, c2):
@@ -128,6 +129,11 @@ class HBTMeasurement:
     def estimate_rep_period(self, c1, c2, prominence_threshold=50):
         """Estimates the laser repetition period by evaluating histogram peak intervals."""
         key = self._get_channel_key(c1, c2)
+        
+        # Check cache first
+        if key in self._rep_cache:
+            return self._rep_cache[key]
+            
         delta_t_ns = np.array(self.data['Correlation'][key][0]) * 1e-3 
         counts_y = np.array(self.data['Correlation'][key][1])
         
@@ -138,11 +144,20 @@ class HBTMeasurement:
             return None
             
         peak_times = delta_t_ns[peaks]
-        return np.median(np.diff(peak_times))
+        result = np.median(np.diff(peak_times))
+        
+        # Save to cache and return
+        self._rep_cache[key] = result
+        return result
 
     def calculate_t0_shift(self, c1, c2, rep_period_ns):
         """Calculates precise electronic tracking zero-delay offset using a center of mass refinement."""
         key = self._get_channel_key(c1, c2)
+        
+        # Check cache first
+        if key in self._t0_cache:
+            return self._t0_cache[key]
+            
         delta_t_ns = np.array(self.data['Correlation'][key][0]) * 1e-3
         counts_y = np.array(self.data['Correlation'][key][1])
 
@@ -161,9 +176,13 @@ class HBTMeasurement:
         y_tight = y_window[tight_mask]
         
         if np.sum(y_tight) == 0:
-            return approx_t0
+            result = approx_t0
+        else:
+            result = np.sum(x_tight * y_tight) / np.sum(y_tight)
             
-        return np.sum(x_tight * y_tight) / np.sum(y_tight)
+        # Save to cache and return
+        self._t0_cache[key] = result
+        return result
 
 
 

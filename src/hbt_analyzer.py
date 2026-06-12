@@ -263,45 +263,143 @@ class HBTAnalyzer:
 
 
 class HBTComparator:
-    def __init__(self, run_A, run_B, label_A="Run A", label_B="Run B"):
+    def __init__(self, run_A, run_B, label_A="Run A", label_B="Run B", comparison_type="Variable"):
         """
-        Initializes cross-dataset comparison utility using two distinct HBTMeasurement configurations.
+        Initializes the cross-dataset comparison engine using two distinct HBTMeasurement configurations.
+        
+        Parameters:
+            run_A (HBTMeasurement): First measurement instance.
+            run_B (HBTMeasurement): Second measurement instance to compare against run_A.
+            label_A (str): Value/Description of condition A (e.g., "10nm Bandpass", "0 Deg").
+            label_B (str): Value/Description of condition B (e.g., "50nm Broad", "90 Deg").
+            comparison_type (str): The physical parameter being tested (e.g., "Optical Filter", "Polarization").
         """
         self.run_A = run_A
         self.run_B = run_B
         self.label_A = label_A
         self.label_B = label_B
+        self.comparison_type = comparison_type
 
-    def compare_filter_runs(self, c1, c2, tau_min=0.3, tau_max=30.0, step=0.6, num_side_peaks=3):
-        """Tracks differential $g^{(2)}$ values to check for amplitude noise modulation components."""
+    def _generate_smart_title(self, base_title):
+        """
+        Constructs a clean, dynamic title by grouping shared baseline metadata 
+        and explicitly highlighting the variable being compared.
+        """
+        # Group metadata if it's identical across runs, otherwise show the delta
+        mat_str = self.run_A.material if self.run_A.material == self.run_B.material else f"{self.run_A.material} vs {self.run_B.material}"
+        pow_str = self.run_A.power if self.run_A.power == self.run_B.power else f"{self.run_A.power} vs {self.run_B.power}"
+        
+        return (f"{base_title}\n"
+                f"Varying {self.comparison_type}: [{self.label_A}] $\\leftrightarrow$ [{self.label_B}]\n"
+                f"Baseline: {mat_str} $\\mid$ {pow_str}")
+
+    def plot_g2_comparison(self, c1=None, c2=None, tau_min=0.3, tau_max=30.0, step=0.6, num_side_peaks=3):
+        """
+        Polymorphic interface to compare direct g^(2)(0) tracking data across two conditions.
+        
+        If c1 and c2 are provided: Renders a single high-resolution comparison chart.
+        If c1 and c2 are None: Renders a complete 5x3 differential visualization matrix.
+        """
         tau_in_ns = np.arange(tau_min, tau_max, step)
-        g2_A, g2_B = [], []
         
-        for tau in tau_in_ns:
-            g2_A.append(self.run_A.compute_g2_direct(c1, c2, tau))
-            g2_B.append(self.run_B.compute_g2_direct(c1, c2, tau))
+        # ------------------ BRANCH 1: MASTER MULTIPLEXED GRID ------------------
+        if c1 is None or c2 is None:
+            inv_map_A = {v: k for k, v in self.run_A.channel_map.items()}
+            inv_map_B = {v: k for k, v in self.run_B.channel_map.items()}
+            
+            cross_rows = ['TT', 'TR', 'RT', 'RR']
+            cross_cols = [('3', '4'), ('3', '5'), ('4', '5')]
+            auto_cols = ['3', '4', '5']
+            
+            fig, axes = plt.subplots(5, 3, figsize=(18, 20), dpi=300)
+            
+            for i in range(5):
+                for j in range(3):
+                    ax = axes[i, j]
+                    
+                    try:
+                        if i == 0:
+                            h = auto_cols[j]
+                            ch1_A = inv_map_A[f"H{h}R"]; ch2_A = inv_map_A[f"H{h}T"]
+                            ch1_B = inv_map_B[f"H{h}R"]; ch2_B = inv_map_B[f"H{h}T"]
+                            subplot_title = f"Auto $g^{{(2)}}_{{{h}{h}}}$ (RT)"
+                        else:
+                            row_type = cross_rows[i-1]
+                            hA, hB = cross_cols[j]
+                            ch1_A = inv_map_A[f"H{hA}{row_type[0]}"]; ch2_A = inv_map_A[f"H{hB}{row_type[1]}"]
+                            ch1_B = inv_map_B[f"H{hA}{row_type[0]}"]; ch2_B = inv_map_B[f"H{hB}{row_type[1]}"]
+                            subplot_title = f"Cross $g^{{(2)}}_{{{hA}{hB}}}$ ({row_type})"
+                    except KeyError as e:
+                        print(f"Skipping subplot context at ({i},{j}): Missing channel reference mapping {e}.")
+                        ax.set_visible(False)
+                        continue
+                    
+                    g2_A, g2_B = [], []
+                    for tau in tau_in_ns:
+                        g2_A.append(self.run_A.compute_g2_direct(ch1_A, ch2_A, tau))
+                        g2_B.append(self.run_B.compute_g2_direct(ch1_B, ch2_B, tau))
+                        
+                    valid_g2 = [g for g in g2_A + g2_B if not np.isnan(g)]
+                    y_top = max(valid_g2) * 1.1 if valid_g2 else 2.5
+                    
+                    # Apply standardized physical background bounds
+                    ax.axhspan(0, 1, color='#2ecc71', alpha=0.08)                
+                    ax.axhspan(1, 2, color='#f1c40f', alpha=0.08)                
+                    ax.axhspan(2, y_top, color='#e74c3c', alpha=0.08)            
+                    ax.axhline(y=1, color='#27ae60', linestyle='--', alpha=0.8) 
+                    
+                    lbl_A = self.label_A if i == 0 and j == 0 else ""
+                    lbl_B = self.label_B if i == 0 and j == 0 else ""
+                    
+                    ax.plot(tau_in_ns, g2_A, marker='o', linestyle='-', color='#e74c3c', markersize=4, alpha=0.8, label=lbl_A)
+                    ax.plot(tau_in_ns, g2_B, marker='s', linestyle='-', color='#2980b9', markersize=4, alpha=0.8, label=lbl_B)
+                    
+                    ax.set_ylim(0, y_top)
+                    ax.set_xlim(tau_min, tau_max)
+                    ax.set_title(subplot_title, fontsize=12)
+                    ax.grid(True, alpha=0.3)
+                    
+                    if i == 4: ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
+                    if j == 0: ax.set_ylabel(r"$g^{(2)}_{direct}(0)$")
+                    if i == 0 and j == 0: ax.legend(loc='best')
+                    
+            master_title = self._generate_smart_title("Differential Spectrum Analysis Matrix")
+            plt.suptitle(master_title, fontsize=18, y=1.02)
+            plt.tight_layout()
+            plt.show()
+            return fig, axes
 
-        physical_name = self.run_A._get_physical_name(c1, c2)
+        # ------------------ BRANCH 2: SINGLE PAIR PLOT ------------------
+        else:
+            g2_A, g2_B = [], []
+            for tau in tau_in_ns:
+                g2_A.append(self.run_A.compute_g2_direct(c1, c2, tau))
+                g2_B.append(self.run_B.compute_g2_direct(c1, c2, tau))
 
-        fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
-        ax.axhspan(0, 1, color='#2ecc71', alpha=0.1)                
-        ax.axhspan(1, 2, color='#f1c40f', alpha=0.1)                          
-        ax.axhline(y=1, color='#27ae60', linestyle='--', alpha=0.9) 
+            physical_name = self.run_A._get_physical_name(c1, c2)
 
-        ax.plot(tau_in_ns, g2_A, marker='o', linestyle='-', color='#e74c3c', markersize=5, alpha=0.8, label=self.label_A)
-        ax.plot(tau_in_ns, g2_B, marker='s', linestyle='-', color='#2980b9', markersize=5, alpha=0.8, label=self.label_B)
-        
-        ax.set_ylim(bottom=0)
-        ax.set_xlim(left=0, right=tau_max)
-        
-        # Enriched differential metadata representation
-        ax.set_title(f"Differential Stability Test: {physical_name}\n"
-                     f"A: {self.run_A.material} ({self.run_A.power}) $\leftrightarrow$ B: {self.run_B.material} ({self.run_B.power})", fontsize=11)
-        ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
-        ax.set_ylabel(r"$g^{(2)}_{direct}(0)$")
-        ax.legend(loc="best")
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.show()
-        
-        return fig, ax
+            fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
+            max_g2 = max(max(g2_A), max(g2_B))
+            y_top = max_g2 * 1.1
+
+            ax.axhspan(0, 1, color='#2ecc71', alpha=0.1, label='Antibunching ($g^{(2)} < 1$)')
+            ax.axhspan(1, 2, color='#f1c40f', alpha=0.1, label='Bunching ($1 \leq g^{(2)} \leq 2$)')
+            ax.axhspan(2, y_top, color='#e74c3c', alpha=0.1, label='Super-bunching ($g^{(2)} > 2$)')
+            ax.axhline(y=1, color='#27ae60', linestyle='--', alpha=0.9) 
+
+            ax.plot(tau_in_ns, g2_A, marker='o', linestyle='-', color='#e74c3c', markersize=5, alpha=0.8, label=self.label_A)
+            ax.plot(tau_in_ns, g2_B, marker='s', linestyle='-', color='#2980b9', markersize=5, alpha=0.8, label=self.label_B)
+            
+            ax.set_ylim(bottom=0, top=y_top)
+            ax.set_xlim(left=0, right=tau_max)
+            
+            single_title = self._generate_smart_title(f"Differential Stability Test: {physical_name}")
+            ax.set_title(single_title, fontsize=11)
+            ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
+            ax.set_ylabel(r"$g^{(2)}_{direct}(0)$")
+            ax.legend(loc="best")
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.show()
+            
+            return fig, ax
