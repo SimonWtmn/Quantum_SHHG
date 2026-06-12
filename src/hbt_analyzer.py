@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 
 # Sync visual parameters for clean output presentation
 plt.rcParams.update({
-    "text.usetex": True,
+    "text.usetex": False,
     "font.family": "serif",
     "font.size": 12,
     "axes.titlesize": 14,
@@ -184,9 +184,9 @@ class HBTAnalyzer:
                 if i == 4: ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
                 if j == 0: ax.set_ylabel(r"$g^{(2)}(0)$")
 
-        fig.legend(loc='upper center', bbox_to_anchor=(0.5, 0.99), ncol=2)
+        fig.legend(loc='upper center', bbox_to_anchor=(0.5, 0.98), ncol=2)
         plt.suptitle(f"Comprehensive Tracking Grid: Harmonics 3, 4, 5\n"
-                     f"Sample: {self.measure.material} $\mid$ {self.measure.power} $\mid$ {self.measure.run_number} ({self.measure.date})", fontsize=18, y=1.02)
+                     f"Sample: {self.measure.material} $\mid$ {self.measure.power} $\mid$ {self.measure.run_number} ({self.measure.date})", fontsize=18, y=1.01)
         plt.tight_layout()
         plt.show()
         return fig, axes
@@ -251,9 +251,9 @@ class HBTAnalyzer:
                 if i == 3: ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
                 if j == 0: ax.set_ylabel(r"$R$ Parameter")
 
-        fig.legend(loc='upper center', bbox_to_anchor=(0.5, 0.99), ncol=2)
+        fig.legend(loc='upper center', bbox_to_anchor=(0.5, 0.97), ncol=2)
         plt.suptitle(f"Cauchy-Schwarz $R$ Metric Space Correlation Matrix\n"
-                     f"Sample: {self.measure.material} $\mid$ {self.measure.power} $\mid$ {self.measure.run_number} ({self.measure.date})", fontsize=18, y=1.02)
+                     f"Sample: {self.measure.material} $\mid$ {self.measure.power} $\mid$ {self.measure.run_number} ({self.measure.date})", fontsize=18, y=1.01)
         plt.tight_layout()
         plt.show()
         return fig, axes
