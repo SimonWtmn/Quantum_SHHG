@@ -58,8 +58,20 @@ class GridVisualizer:
             'delay': f'{delay_kind} (delay)',
             'heralded': 'Virtual (heralded)',
         }
-        self.run_colors = ['#e74c3c', '#2980b9', '#8e44ad', '#f39c12', '#2c3e50']
+        # One palette for the whole figure, sized to the number of runs so overlaid datasets
+        # always get distinct colours (no recycling on large campaigns / power scans).
+        self.run_colors = self._make_run_colors(len(self.runs))
 
+
+    @staticmethod
+    def _make_run_colors(n):
+        """Return `n` visually distinct colours: tab10 (<=10), tab20 (<=20), else a continuous
+        perceptually-ordered map (turbo) sampled evenly."""
+        if n <= 10:
+            return [plt.cm.tab10(i) for i in range(n)]
+        if n <= 20:
+            return [plt.cm.tab20(i) for i in range(n)]
+        return [plt.cm.turbo(i / (n - 1)) for i in range(n)]
 
 
     def _get_title(self, base_title):
@@ -117,10 +129,9 @@ class GridVisualizer:
         if handles:
             fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, legend_y),
                        ncol=ncol, frameon=True, fontsize=14 if is_grid else 12)
-            # clearance below the legend: grids also need room for the first-row subplot titles.
-            plots_top = legend_y - (2.5 * line_h if is_grid else 1.8 * line_h)
+            plots_top = legend_y - (3 * line_h if is_grid else 1.8 * line_h)
         else:
-            plots_top = legend_y - (0.8 * line_h if is_grid else 0.2 * line_h)
+            plots_top = legend_y - (1.6 * line_h if is_grid else 0.2 * line_h)
 
         if is_grid:
             fig.subplots_adjust(top=plots_top, bottom=0.05, hspace=0.30, wspace=0.23)
@@ -133,7 +144,7 @@ class GridVisualizer:
 # ---------------- 1. Coherence ----------------
 
     def plot_coherence(self, c1=None, c2=None, time_window_ns=5.0, xlim=None, integration_window_ns=None):
-        colors = plt.cm.tab10(np.linspace(0, 1, max(10, len(self.runs))))
+        colors = self.run_colors
 
         if xlim is None:
             x_bounds = (-time_window_ns, time_window_ns)
@@ -316,14 +327,14 @@ class GridVisualizer:
             'clip_on': True, 
             'transform': ax.get_yaxis_transform()
         }
-        if max(min(0.5, min(valid) * 1.1), 4.5) < 0.5:
-            ax.text(0.98, 0.95, "Anti-bunching", color='#2ecc71', alpha=0.8, **text_kwargs)
-        if final_max_y > 1.0:
-            ax.text(0.98, 1.05, "Bunching", color='#f1c40f', alpha=0.8, **text_kwargs)
-        if final_max_y > 2.0:
-            ax.text(0.98, 2.05, "Super-bunching", color='#e67e22', alpha=0.8, **text_kwargs)
-        if final_max_y > 4.0:
-            ax.text(0.98, 4.05, "Non-physical", color='#e74c3c', alpha=0.8, **text_kwargs)
+        # if max(min(0.5, min(valid) * 1.1), 4.5) < 0.5:
+        #     ax.text(0.98, 0.95, "Anti-bunching", color='#2ecc71', alpha=0.8, **text_kwargs)
+        # if final_max_y > 1.0:
+        #     ax.text(0.98, 1.05, "Bunching", color='#f1c40f', alpha=0.8, **text_kwargs)
+        # if final_max_y > 2.0:
+        #     ax.text(0.98, 2.05, "Super-bunching", color='#e67e22', alpha=0.8, **text_kwargs)
+        # if final_max_y > 4.0:
+        #     ax.text(0.98, 4.05, "Non-physical", color='#e74c3c', alpha=0.8, **text_kwargs)
 
         ax.grid(True, alpha=0.3)
 
@@ -419,8 +430,6 @@ class GridVisualizer:
 
 
     # ---------------- 4. Power Scan ----------------
-    # Same measurement (filter / polarisation), several pump powers. We fix ONE integration
-    # window tau_in (the delay method is the most reliable) and plot the observable vs power.
 
     def _g2_one(self, run, c1, c2, tau_in_ns, method):
         """Single g^(2)(0) value for a run at a fixed integration window, via the chosen method.

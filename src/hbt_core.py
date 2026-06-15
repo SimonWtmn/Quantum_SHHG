@@ -98,6 +98,7 @@ class HBTMeasurement:
         self.rotation_stage = exp.get('rotation_stage')
         self.filter_label, self.polarization = self._parse_run_conditions(self.run_dir.name)
 
+
     @staticmethod
     def _parse_run_conditions(dirname):
         """Extract the bandpass filter and polarisation configuration from the run folder name,
@@ -132,6 +133,7 @@ class HBTMeasurement:
             parts.append(self.polarization)
         return "  |  ".join(parts)
 
+
     def acquisition_summary(self):
         """One-line physical configuration shared by a run (sample, laser, filter, polarisation)."""
         parts = []
@@ -149,6 +151,7 @@ class HBTMeasurement:
             parts.append(self.polarization)
         return "  |  ".join(parts)
 
+
     def acquisition_details(self):
         """One-line acquisition settings (binning, coincidence window, integration time)."""
         parts = []
@@ -161,11 +164,13 @@ class HBTMeasurement:
         parts.append(rf"{self.date}")
         return "  |  ".join(parts)
 
+
     def short_tag(self):
         """Compact dataset descriptor for multi-run legends (filter / polarisation / power)."""
         bits = [b for b in (self.filter_label, self.polarization,
                             f"{self.power_mw:g} mW" if self.power_mw is not None else None) if b]
         return " | ".join(bits) if bits else self.pkl_path.stem
+
 
     def describe(self, max_depth=6, max_list_preview=4):
         """Pretty-print the structure of the loaded pickle: every key with its type, the length
@@ -176,6 +181,7 @@ class HBTMeasurement:
         print(f"top-level keys: {list(self.raw_dump.keys())}")
         print("=" * 78)
         self._describe_node(self.raw_dump, "", 0, max_depth, max_list_preview)
+
 
     @staticmethod
     def _describe_node(node, prefix, depth, max_depth, max_list_preview):
@@ -301,6 +307,41 @@ class HBTMeasurement:
         if val is None:
             return 0.0
         return float(val[1]) if isinstance(val, (list, tuple)) else float(val)
+
+
+    def harmonic_intensity(self, n, kind='countrate'):
+        """Mean intensity (photon flux) of harmonic n = H{n}, used for power-scan scaling.
+
+        Reads the merged-harmonic (virtual) value, which already sums the T and R arms:
+          * kind='countrate' -> counts per second (default, the natural intensity proxy),
+          * kind='counts'    -> total integrated counts.
+        Falls back to summing the two physical detectors of that harmonic if the virtual
+        store is absent. Returns NaN when neither is available.
+        """
+        vname = f"H{n}"
+        store = 'countrates_virtual' if kind == 'countrate' else 'counts_virtual'
+        d = self.data.get(store, {})
+        if vname in d:
+            v = d[vname]
+            return float(v[1]) if isinstance(v, (list, tuple)) else float(v)
+
+        pstore = 'countrates_physical' if kind == 'countrate' else 'counts_physical'
+        pd_ = self.data.get(pstore, {})
+        total, found = 0.0, False
+        for ch in self.channel_map:
+            if self._get_virtual_name(ch) == vname:
+                val = pd_.get(str(ch))
+                if val is not None:
+                    total += float(val[1]) if isinstance(val, (list, tuple)) else float(val)
+                    found = True
+        return total if found else np.nan
+
+
+    def pump_intensity(self):
+        """Driving-field intensity proxy I_0 for the power scan. We only control the average
+        pump power, and at fixed geometry I_0 is proportional to it, so the power (mW) is
+        returned directly (it sets the abscissa of every power-scan plot)."""
+        return self.power_mw
 
 
     def _get_twofold_coincidence(self, c1, c2, is_virtual=False):
