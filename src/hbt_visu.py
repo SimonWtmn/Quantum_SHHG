@@ -34,43 +34,97 @@ plt.rcParams.update({
 })
 
 class GridVisualizer:
-    def __init__(self, measurements, labels=None, comparison_variable=None):
+    def __init__(self, measurements, labels=None, comparison_variable=None, show_details=False):
         if not isinstance(measurements, list):
             self.runs = [measurements]
-            self.labels = labels if labels else ["Dataset"]
+            self.labels = labels if labels else [measurements.short_tag()]
         else:
             self.runs = measurements
-            self.labels = labels if labels else [f"Run {i+1}" for i in range(len(measurements))]
-        
+            # When no explicit labels are given, build them from the pkl/folder metadata
+            # (filter | polarisation | power) so legends are self-documenting.
+            self.labels = labels if labels else [m.short_tag() for m in measurements]
+
         self.comparison_variable = comparison_variable
+        # By default titles stay compact (sample / power / filter / polarisation). Set
+        # show_details=True to also print the acquisition settings (wavelength, rep-rate,
+        # binning, coincidence window, acquisition time, stage, date).
+        self.show_details = show_details
         self.method_colors = {'direct': '#e74c3c', 'delay': '#2980b9', 'heralded': '#27ae60'}
+        self.method_labels = {
+            'direct': 'Physical (direct)',
+            'delay': 'Virtual (delay)',
+            'heralded': 'Virtual (heralded)',
+        }
         self.run_colors = ['#e74c3c', '#2980b9', '#8e44ad', '#f39c12', '#2c3e50']
 
 
     def _get_title(self, base_title):
+        r0 = self.runs[0]
         if len(self.runs) == 1:
-            return f"{base_title} | Sample: {self.runs[0].material} | {self.runs[0].power} ({self.runs[0].date})"
+            lines = [base_title, r0.acquisition_essentials()]
+            if self.show_details:
+                # full physical config + acquisition settings, only on request.
+                lines = [base_title, r0.acquisition_summary(), r0.acquisition_details()]
         else:
-            var_str = f"Varying: {self.comparison_variable}" if self.comparison_variable else "Cross-Dataset Comparison"
-            return f"{base_title} | {var_str} | Base Sample: {self.runs[0].material}"
+            var_str = f"Varying: {self.comparison_variable}" if self.comparison_variable else "Cross-dataset comparison"
+            head = f"{base_title}  ({var_str})"
+            lines = [head]
+            if r0.material and r0.material != 'Unknown':
+                lines.append(rf"Sample: {r0.material}")
+            if self.show_details:
+                extra = [rf"$\lambda_L = {r0.wavelength_nm:g}$ nm"] if r0.wavelength_nm else []
+                if r0.rep_rate_hz:
+                    extra.append(rf"$f_{{rep}} = {r0.rep_rate_hz / 1e6:.2f}$ MHz")
+                extra.append(rf"bin $= {r0.binwidth_ps:g}$ ps")
+                if r0.coincidence_window_ns:
+                    extra.append(rf"coinc. window $= {r0.coincidence_window_ns:g}$ ns")
+                lines.append("  |  ".join(extra))
+        return "\n".join([ln for ln in lines if ln])
 
 
-    def _add_global_legend(self, fig, axes):
-        """Extract legend for supblots"""
-        all_axes = axes.flatten() if isinstance(axes, np.ndarray) else [axes]
+    def _finalize(self, fig, axes, base_title):
+        """Add the metadata-rich (multi-line) title and a non-overlapping global legend.
+
+        Layout margins are reserved separately for a single plot vs a subplot grid so the
+        title block, legend and axes never collide.
+        """
+        is_grid = isinstance(axes, np.ndarray)
+
+        title = self._get_title(base_title)
+        n_lines = title.count("\n") + 1
+
+        all_axes = axes.flatten() if is_grid else [axes]
         handles, labels = [], []
-        
         for ax in all_axes:
             h, l = ax.get_legend_handles_labels()
             if h:
                 handles, labels = h, l
-                break 
-                
+                break
+        ncol = max(1, min(len(labels), 5))
+
+        # Per-line height as a fraction of the figure (depends on the figure height in inches),
+        # so the legend can be tucked right under the (multi-line) title with no extra gap.
+        fig_h = fig.get_size_inches()[1]
+        title_fs = 14 if is_grid else 12
+        line_h = (title_fs * 1.5 / 72.0) / fig_h
+
+        top = 0.997
+        fig.suptitle(title, y=top, va='top', fontsize=title_fs)
+
+        legend_y = top - n_lines * line_h - line_h * 0.4
         if handles:
-            fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.93), 
-                       ncol=max(1, len(labels)), frameon=True)
-            
-        plt.tight_layout
+            fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, legend_y),
+                       ncol=ncol, frameon=True, fontsize=11 if is_grid else 10)
+            # clearance below the legend: grids also need room for the first-row subplot titles.
+            plots_top = legend_y - (3.1 * line_h if is_grid else 1.8 * line_h)
+        else:
+            plots_top = legend_y - (1.4 * line_h if is_grid else 0.2 * line_h)
+
+        if is_grid:
+            fig.subplots_adjust(top=plots_top, bottom=0.05, hspace=0.30, wspace=0.23)
+        else:
+            fig.subplots_adjust(top=plots_top, bottom=0.13, left=0.12, right=0.95)
+        return fig
 
 
 
@@ -96,7 +150,7 @@ class GridVisualizer:
                     x, y = run.get_correlation_trace(ch1, ch2)
                     if x is None: continue
                     
-                    t0 = run.calculate_t0_shift(ch1, ch2, (1 / run.rep_rate_hz * 1e9))
+                    t0 = run.calculate_t0_shift(ch1, ch2)
                     delta_t = x - t0
                     
                     mask = (delta_t >= x_bounds[0] - 1.0) & (delta_t <= x_bounds[1] + 1.0)
@@ -108,11 +162,10 @@ class GridVisualizer:
             if integration_window_ns is not None:
                 ax.axvspan(-integration_window_ns / 2, integration_window_ns / 2, color="#ea4432", alpha=0.3, label=r'Fen\^etre $\tau_{in}$')
             
-            ax.set_title(self._get_title(f"Coherence Spectrum: {phys_name}"))
             ax.set_xlabel(r"$\Delta t$ (ns)"); ax.set_ylabel(r"Counts $N \times 10^3$")
             ax.set_xlim(x_bounds)
             ax.grid(True, alpha=0.3)
-            self._add_global_legend(fig, ax)
+            self._finalize(fig, ax, f"Coherence Spectrum (virtual): {phys_name}")
             plt.show()
             return fig, ax
 
@@ -142,7 +195,7 @@ class GridVisualizer:
                         x, y = run.get_correlation_trace(ch1, ch2)
                         if x is None: continue
                         
-                        t0 = run.calculate_t0_shift(ch1, ch2, (1 / run.rep_rate_hz * 1e9))
+                        t0 = run.calculate_t0_shift(ch1, ch2)
                         delta_t = x - t0
                         mask = (delta_t >= x_bounds[0] - 1.0) & (delta_t <= x_bounds[1] + 1.0)
                         
@@ -161,8 +214,7 @@ class GridVisualizer:
                 if i == 4: ax.set_xlabel(r"$\Delta t$ (ns)")
                 if j == 0: ax.set_ylabel(r"Counts $N \times 10^3$")
 
-        plt.suptitle(self._get_title("Coherence Spectrum Matrix"), y=0.95)
-        self._add_global_legend(fig, axes)
+        self._finalize(fig, axes, "Coherence Spectrum Matrix (virtual channels)")
         plt.show()
         return fig, axes
 
@@ -171,16 +223,17 @@ class GridVisualizer:
 
     # ---------------- 2. G2 Visualization ----------------
 
-    def plot_g2(self, c1=None, c2=None, methods=['direct'], tau_min=0.3, tau_max=30.0, step=0.6):
+    def plot_g2(self, c1=None, c2=None, methods=None, tau_min=0.3, tau_max=30.0, step=0.6):
+        if methods is None:
+            methods = ['direct']
         tau_in_ns = np.arange(tau_min, tau_max, step)
 
         if c1 is not None and c2 is not None:
             fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
             phys_name = self.runs[0]._get_physical_name(c1, c2)
             self._fill_ax_g2(ax, c1, c2, tau_in_ns, methods)
-            ax.set_title(self._get_title(f"Integration Sweep: {phys_name}"), y=1.1)
             ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)"); ax.set_ylabel(r"$g^{(2)}(0)$")
-            self._add_global_legend(fig, ax)
+            self._finalize(fig, ax, f"Integration Sweep: {phys_name}")
             plt.show()
             return fig, ax
 
@@ -207,8 +260,7 @@ class GridVisualizer:
                 if i == 4: ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
                 if j == 0: ax.set_ylabel(r"$g^{(2)}(0)$")
 
-        plt.suptitle(self._get_title("$g^{(2)}$ Sweeping Matrix"), y=0.95)
-        self._add_global_legend(fig, axes)
+        self._finalize(fig, axes, "$g^{(2)}$ Sweeping Matrix")
         plt.show()
         return fig, axes
 
@@ -234,7 +286,8 @@ class GridVisualizer:
                     max_y = min(max(max_y, max(valid) * 1.1), 4.5)
                 
                 color = self.method_colors.get(method, '#333333') if len(self.runs) == 1 else self.run_colors[run_idx % len(self.run_colors)]
-                lbl = (f"{method.capitalize()}" if len(self.runs) == 1 else f"{self.labels[run_idx]}" + (f" ({method})" if len(methods) > 1 else ""))
+                m_name = self.method_labels.get(method, method.capitalize())
+                lbl = (m_name if len(self.runs) == 1 else f"{self.labels[run_idx]}" + (f" ({m_name})" if len(methods) > 1 else ""))
                 marker = 'o' if method=='direct' else ('s' if method=='delay' else '^')
                 linestyle = '-' if len(self.runs) == 1 else ('-' if m_idx == 0 else '--')
                 
@@ -270,16 +323,17 @@ class GridVisualizer:
 
     # ---------------- 3. R Parameter Visualization ----------------
 
-    def plot_R(self, cross_pair=None, auto_pair_1=None, auto_pair_2=None, methods=['direct'], tau_min=0.3, tau_max=30.0, step=0.6):
+    def plot_R(self, cross_pair=None, auto_pair_1=None, auto_pair_2=None, methods=None, tau_min=0.3, tau_max=30.0, step=0.6):
+        if methods is None:
+            methods = ['direct']
         tau_in_ns = np.arange(tau_min, tau_max, step)
 
         if cross_pair is not None and auto_pair_1 is not None and auto_pair_2 is not None:
             fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
             phys_name = self.runs[0]._get_physical_name(cross_pair[0], cross_pair[1])
             self._fill_ax_R(ax, cross_pair, auto_pair_1, auto_pair_2, tau_in_ns, methods)
-            ax.set_title(self._get_title(f"Cauchy-Schwarz $R$ Sweep: {phys_name}"), pad=20)
             ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)"); ax.set_ylabel(r"$R$ Parameter")
-            self._add_global_legend(fig, ax)
+            self._finalize(fig, ax, f"Cauchy-Schwarz $R$ Sweep: {phys_name}")
             plt.show()
             return fig, ax
 
@@ -302,9 +356,7 @@ class GridVisualizer:
                 if i == 3: ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
                 if j == 0: ax.set_ylabel(r"$R$ Parameter")
 
-        meth_title = ", ".join([m.capitalize() for m in methods])
-        plt.suptitle(self._get_title(f"Cauchy-Schwarz Sweeping Matrix"), y=0.95)
-        self._add_global_legend(fig, axes)
+        self._finalize(fig, axes, "Cauchy-Schwarz Sweeping Matrix")
         plt.show()
         return fig, axes
 
@@ -337,7 +389,8 @@ class GridVisualizer:
                     max_y = min(max(max_y, max(valid) * 1.1), 3.0)
                 
                 color = self.method_colors.get(method, '#333333') if len(self.runs) == 1 else self.run_colors[run_idx % len(self.run_colors)]
-                lbl = (f"{method.capitalize()}" if len(self.runs) == 1 else f"{self.labels[run_idx]}" + (f" ({method})" if len(methods) > 1 else ""))
+                m_name = self.method_labels.get(method, method.capitalize())
+                lbl = (m_name if len(self.runs) == 1 else f"{self.labels[run_idx]}" + (f" ({m_name})" if len(methods) > 1 else ""))
                 marker = 'o' if method=='direct' else ('s' if method=='delay' else '^')
                 linestyle = '-' if len(self.runs) == 1 else ('-' if m_idx == 0 else '--')
                 
