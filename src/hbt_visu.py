@@ -40,22 +40,26 @@ class GridVisualizer:
             self.labels = labels if labels else [measurements.short_tag()]
         else:
             self.runs = measurements
-            # When no explicit labels are given, build them from the pkl/folder metadata
-            # (filter | polarisation | power) so legends are self-documenting.
             self.labels = labels if labels else [m.short_tag() for m in measurements]
 
         self.comparison_variable = comparison_variable
-        # By default titles stay compact (sample / power / filter / polarisation). Set
-        # show_details=True to also print the acquisition settings (wavelength, rep-rate,
-        # binning, coincidence window, acquisition time, stage, date).
         self.show_details = show_details
+
+        self.histogram_source = (
+            "physical"
+            if self.runs and all(getattr(r, "has_physical_histograms", False) for r in self.runs)
+            else "virtual"
+        )
+        delay_kind = "Physical" if self.histogram_source == "physical" else "Virtual"
+
         self.method_colors = {'direct': '#e74c3c', 'delay': '#2980b9', 'heralded': '#27ae60'}
         self.method_labels = {
             'direct': 'Physical (direct)',
-            'delay': 'Virtual (delay)',
+            'delay': f'{delay_kind} (delay)',
             'heralded': 'Virtual (heralded)',
         }
         self.run_colors = ['#e74c3c', '#2980b9', '#8e44ad', '#f39c12', '#2c3e50']
+
 
 
     def _get_title(self, base_title):
@@ -63,7 +67,6 @@ class GridVisualizer:
         if len(self.runs) == 1:
             lines = [base_title, r0.acquisition_essentials()]
             if self.show_details:
-                # full physical config + acquisition settings, only on request.
                 lines = [base_title, r0.acquisition_summary(), r0.acquisition_details()]
         else:
             var_str = f"Varying: {self.comparison_variable}" if self.comparison_variable else "Cross-dataset comparison"
@@ -80,6 +83,7 @@ class GridVisualizer:
                     extra.append(rf"coinc. window $= {r0.coincidence_window_ns:g}$ ns")
                 lines.append("  |  ".join(extra))
         return "\n".join([ln for ln in lines if ln])
+
 
 
     def _finalize(self, fig, axes, base_title):
@@ -102,23 +106,21 @@ class GridVisualizer:
                 break
         ncol = max(1, min(len(labels), 5))
 
-        # Per-line height as a fraction of the figure (depends on the figure height in inches),
-        # so the legend can be tucked right under the (multi-line) title with no extra gap.
         fig_h = fig.get_size_inches()[1]
-        title_fs = 14 if is_grid else 12
+        title_fs = 18 if is_grid else 16
         line_h = (title_fs * 1.5 / 72.0) / fig_h
 
-        top = 0.997
+        top = 0.93
         fig.suptitle(title, y=top, va='top', fontsize=title_fs)
 
-        legend_y = top - n_lines * line_h - line_h * 0.4
+        legend_y = top - n_lines * line_h * 0.8
         if handles:
             fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, legend_y),
-                       ncol=ncol, frameon=True, fontsize=11 if is_grid else 10)
+                       ncol=ncol, frameon=True, fontsize=14 if is_grid else 12)
             # clearance below the legend: grids also need room for the first-row subplot titles.
-            plots_top = legend_y - (3.1 * line_h if is_grid else 1.8 * line_h)
+            plots_top = legend_y - (2.5 * line_h if is_grid else 1.8 * line_h)
         else:
-            plots_top = legend_y - (1.4 * line_h if is_grid else 0.2 * line_h)
+            plots_top = legend_y - (0.8 * line_h if is_grid else 0.2 * line_h)
 
         if is_grid:
             fig.subplots_adjust(top=plots_top, bottom=0.05, hspace=0.30, wspace=0.23)
@@ -165,7 +167,7 @@ class GridVisualizer:
             ax.set_xlabel(r"$\Delta t$ (ns)"); ax.set_ylabel(r"Counts $N \times 10^3$")
             ax.set_xlim(x_bounds)
             ax.grid(True, alpha=0.3)
-            self._finalize(fig, ax, f"Coherence Spectrum (virtual): {phys_name}")
+            self._finalize(fig, ax, f"Coherence Spectrum ({self.histogram_source}): {phys_name}")
             plt.show()
             return fig, ax
 
@@ -214,7 +216,7 @@ class GridVisualizer:
                 if i == 4: ax.set_xlabel(r"$\Delta t$ (ns)")
                 if j == 0: ax.set_ylabel(r"Counts $N \times 10^3$")
 
-        self._finalize(fig, axes, "Coherence Spectrum Matrix (virtual channels)")
+        self._finalize(fig, axes, f"Coherence Spectrum Matrix ({self.histogram_source} channels)")
         plt.show()
         return fig, axes
 
@@ -295,27 +297,34 @@ class GridVisualizer:
 
         if not has_data: return
 
+        final_max_y = max(1.2, max_y)
+        ax.set_ylim(0.9, 1.6)
+        ax.set_xlim(tau_in_ns[0], tau_in_ns[-1])
+
         ax.axhspan(0, 1, color='#2ecc71', alpha=0.05)    # Anti-bunching 
         ax.axhspan(1, 2, color='#f1c40f', alpha=0.05)    # Bunching
         ax.axhspan(2, 4, color='#e67e22', alpha=0.08)    # Super-bunching
-        ax.axhspan(4, 100, color='#e74c3c', alpha=0.1)   # Non-physique
+        ax.axhspan(4, 100, color='#e74c3c', alpha=0.1)   # Non-physical
         
-        text_x = tau_in_ns[-1] - (tau_in_ns[-1] - tau_in_ns[0]) * 0.02
-
         ax.axhline(y=1, color="#313131", linestyle='--', lw=1.5, alpha=0.6)
-        ax.axhline(y=2, color="#313131", linestyle='--', lw=1.5, alpha=0.6)
-        ax.axhline(y=4, color="#313131", linestyle='--', lw=1.5, alpha=0.6)
-        if max_y >= 0:
-            ax.text(text_x, 0.1, "Anti-bunching", color='#2ecc71', alpha=0.8, fontweight='bold', ha='right')
-        if max_y >= 1:
-            ax.text(text_x, 1.1, "Bunching", color='#f1c40f', alpha=0.8, fontweight='bold', ha='right')
-        if max_y > 2.2:
-            ax.text(text_x, 2.1, "Super-bunching", color='#e67e22', alpha=0.8, fontweight='bold', ha='right')
-        if max_y >= 4.0:
-            ax.text(text_x, 4.1, "Non-physical", color='#e74c3c', alpha=0.8, fontweight='bold', ha='right')
+        if final_max_y > 2.0: ax.axhline(y=2, color="#313131", linestyle='--', lw=1.5, alpha=0.6)
+        if final_max_y > 4.0: ax.axhline(y=4, color="#313131", linestyle='--', lw=1.5, alpha=0.6)
 
-        ax.set_ylim(0, max_y)
-        ax.set_xlim(tau_in_ns[0], tau_in_ns[-1])
+        text_kwargs = {
+            'ha': 'right', 
+            'fontweight': 'bold', 
+            'clip_on': True, 
+            'transform': ax.get_yaxis_transform()
+        }
+        if max(min(0.5, min(valid) * 1.1), 4.5) < 0.5:
+            ax.text(0.98, 0.95, "Anti-bunching", color='#2ecc71', alpha=0.8, **text_kwargs)
+        if final_max_y > 1.0:
+            ax.text(0.98, 1.05, "Bunching", color='#f1c40f', alpha=0.8, **text_kwargs)
+        if final_max_y > 2.0:
+            ax.text(0.98, 2.05, "Super-bunching", color='#e67e22', alpha=0.8, **text_kwargs)
+        if final_max_y > 4.0:
+            ax.text(0.98, 4.05, "Non-physical", color='#e74c3c', alpha=0.8, **text_kwargs)
+
         ax.grid(True, alpha=0.3)
 
 
@@ -402,6 +411,162 @@ class GridVisualizer:
         ax.axhspan(0, 1, color='#9b59b6', alpha=0.08)
         ax.axhspan(1, 100, color="#dd76b4", alpha=0.15)
         
-        ax.set_ylim(0, max_y)
+        ax.set_ylim(0.8, 1.2)
         ax.set_xlim(tau_in_ns[0], tau_in_ns[-1])
         ax.grid(True, alpha=0.3)
+
+
+
+
+    # ---------------- 4. Power Scan ----------------
+    # Same measurement (filter / polarisation), several pump powers. We fix ONE integration
+    # window tau_in (the delay method is the most reliable) and plot the observable vs power.
+
+    def _g2_one(self, run, c1, c2, tau_in_ns, method):
+        """Single g^(2)(0) value for a run at a fixed integration window, via the chosen method.
+        The delay method uses the physical histogram when available (self.histogram_source)."""
+        return run.g2(c1, c2, tau_in_ns, method=method, source=self.histogram_source)
+
+    def g2_vs_power(self, c1, c2, tau_in_ns=4.0, method='delay'):
+        """g^(2)(0) at a fixed integration window for one channel pair, across every run,
+        returned as (powers_mW, g2_values) sorted by increasing power. Runs without a known
+        power are skipped. c1/c2 are channel numbers on the reference run (self.runs[0])."""
+        powers, vals = [], []
+        for run in self.runs:
+            if run.power_mw is None:
+                continue
+            try:
+                a = run.get_ch(self.runs[0].channel_map[c1])
+                b = run.get_ch(self.runs[0].channel_map[c2])
+            except KeyError:
+                continue
+            powers.append(run.power_mw)
+            vals.append(self._g2_one(run, a, b, tau_in_ns, method))
+        powers, vals = np.array(powers, float), np.array(vals, float)
+        order = np.argsort(powers)
+        return powers[order], vals[order]
+
+    def R_vs_power(self, cross_pair, auto_pair_1, auto_pair_2, tau_in_ns=4.0, method='delay'):
+        """Cauchy-Schwarz R at a fixed integration window across every run, vs power.
+        cross_pair, auto_pair_1, auto_pair_2 are (chA, chB) tuples on the reference run."""
+        powers, vals = [], []
+        for run in self.runs:
+            if run.power_mw is None:
+                continue
+            try:
+                cross = (run.get_ch(self.runs[0].channel_map[cross_pair[0]]),
+                         run.get_ch(self.runs[0].channel_map[cross_pair[1]]))
+                aA = (run.get_ch(self.runs[0].channel_map[auto_pair_1[0]]),
+                      run.get_ch(self.runs[0].channel_map[auto_pair_1[1]]))
+                aB = (run.get_ch(self.runs[0].channel_map[auto_pair_2[0]]),
+                      run.get_ch(self.runs[0].channel_map[auto_pair_2[1]]))
+            except KeyError:
+                continue
+            g_c = self._g2_one(run, cross[0], cross[1], tau_in_ns, method)
+            g_a = self._g2_one(run, aA[0], aA[1], tau_in_ns, method)
+            g_b = self._g2_one(run, aB[0], aB[1], tau_in_ns, method)
+            powers.append(run.power_mw)
+            vals.append(run.compute_R_parameter(g_c, g_a, g_b))
+        powers, vals = np.array(powers, float), np.array(vals, float)
+        order = np.argsort(powers)
+        return powers[order], vals[order]
+
+    def _plot_power_series(self, ax, powers, vals, method, ref_line=1.0):
+        finite = np.isfinite(vals)
+        if not finite.any():
+            return False
+        p, v = powers[finite], vals[finite]
+        color = self.method_colors.get(method, '#2980b9')
+        ax.plot(p, v, marker='o', ms=6, lw=1.6, color=color,
+                label=self.method_labels.get(method, method.capitalize()))
+        if ref_line is not None:
+            ax.axhline(ref_line, color='#313131', ls='--', lw=1.2, alpha=0.6)
+        lo, hi = min(v.min(), ref_line or v.min()), max(v.max(), ref_line or v.max())
+        pad = 0.08 * (hi - lo) if hi > lo else max(0.05, abs(hi) * 0.05)
+        ax.set_ylim(lo - pad, hi + pad)
+        ax.grid(True, alpha=0.3)
+        return True
+
+    def plot_power_scan_g2(self, c1=None, c2=None, tau_in_ns=4.0, method='delay'):
+        """g^(2)(0) vs pump power at a fixed integration window.
+        Single pair if (c1, c2) given, otherwise the full 5x3 auto/cross matrix."""
+        m_name = self.method_labels.get(method, method.capitalize())
+        base = rf"$g^{{(2)}}(0)$ vs pump power  ($\tau_{{in}} = {tau_in_ns:g}$ ns, {m_name})"
+
+        if c1 is not None and c2 is not None:
+            fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
+            phys_name = self.runs[0]._get_physical_name(c1, c2)
+            powers, vals = self.g2_vs_power(c1, c2, tau_in_ns, method)
+            self._plot_power_series(ax, powers, vals, method, ref_line=1.0)
+            ax.set_xlabel(r"Pump power $P$ (mW)"); ax.set_ylabel(r"$g^{(2)}(0)$")
+            self._finalize(fig, ax, f"{base}: {phys_name}")
+            plt.show()
+            return fig, ax
+
+        cross_rows, cross_cols = ['TT', 'TR', 'RT', 'RR'], [('3', '4'), ('3', '5'), ('4', '5')]
+        auto_cols = ['3', '4', '5']
+        fig, axes = plt.subplots(5, 3, figsize=(18, 20), dpi=300)
+        for i in range(5):
+            for j in range(3):
+                ax = axes[i, j]
+                try:
+                    if i == 0:
+                        r1 = self.runs[0].get_ch(f"H{auto_cols[j]}R")
+                        r2 = self.runs[0].get_ch(f"H{auto_cols[j]}T")
+                        title = f"Auto $g^{{(2)}}_{{{auto_cols[j]}{auto_cols[j]}}}$ (RT)"
+                    else:
+                        hA, hB = cross_cols[j]
+                        r1 = self.runs[0].get_ch(f"H{hA}{cross_rows[i-1][0]}")
+                        r2 = self.runs[0].get_ch(f"H{hB}{cross_rows[i-1][1]}")
+                        title = f"Cross $g^{{(2)}}_{{{hA}{hB}}}$ ({cross_rows[i-1]})"
+                except KeyError:
+                    ax.set_visible(False); continue
+
+                powers, vals = self.g2_vs_power(r1, r2, tau_in_ns, method)
+                self._plot_power_series(ax, powers, vals, method, ref_line=1.0)
+                ax.set_title(title)
+                if i == 4: ax.set_xlabel(r"Pump power $P$ (mW)")
+                if j == 0: ax.set_ylabel(r"$g^{(2)}(0)$")
+
+        self._finalize(fig, axes, base)
+        plt.show()
+        return fig, axes
+
+    def plot_power_scan_R(self, cross_pair=None, auto_pair_1=None, auto_pair_2=None,
+                          tau_in_ns=4.0, method='delay'):
+        """Cauchy-Schwarz R vs pump power at a fixed integration window.
+        Single R if the three pairs are given, otherwise the full 4x3 cross matrix."""
+        m_name = self.method_labels.get(method, method.capitalize())
+        base = rf"Cauchy-Schwarz $R$ vs pump power  ($\tau_{{in}} = {tau_in_ns:g}$ ns, {m_name})"
+
+        if cross_pair is not None and auto_pair_1 is not None and auto_pair_2 is not None:
+            fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
+            phys_name = self.runs[0]._get_physical_name(cross_pair[0], cross_pair[1])
+            powers, vals = self.R_vs_power(cross_pair, auto_pair_1, auto_pair_2, tau_in_ns, method)
+            self._plot_power_series(ax, powers, vals, method, ref_line=1.0)
+            ax.set_xlabel(r"Pump power $P$ (mW)"); ax.set_ylabel(r"$R$ Parameter")
+            self._finalize(fig, ax, f"{base}: {phys_name}")
+            plt.show()
+            return fig, ax
+
+        cross_rows, cross_cols = ['TT', 'TR', 'RT', 'RR'], [('3', '4'), ('3', '5'), ('4', '5')]
+        fig, axes = plt.subplots(4, 3, figsize=(18, 16), dpi=300)
+        for i, row in enumerate(cross_rows):
+            for j, (hA, hB) in enumerate(cross_cols):
+                ax = axes[i, j]
+                try:
+                    autoA = (self.runs[0].get_ch(f"H{hA}R"), self.runs[0].get_ch(f"H{hA}T"))
+                    autoB = (self.runs[0].get_ch(f"H{hB}R"), self.runs[0].get_ch(f"H{hB}T"))
+                    cross = (self.runs[0].get_ch(f"H{hA}{row[0]}"), self.runs[0].get_ch(f"H{hB}{row[1]}"))
+                except KeyError:
+                    ax.set_visible(False); continue
+
+                powers, vals = self.R_vs_power(cross, autoA, autoB, tau_in_ns, method)
+                self._plot_power_series(ax, powers, vals, method, ref_line=1.0)
+                ax.set_title(f"$R_{{{hA}{hB}}}$ ({row})")
+                if i == 3: ax.set_xlabel(r"Pump power $P$ (mW)")
+                if j == 0: ax.set_ylabel(r"$R$ Parameter")
+
+        self._finalize(fig, axes, base)
+        plt.show()
+        return fig, axes

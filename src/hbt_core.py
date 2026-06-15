@@ -3,30 +3,30 @@
 HBT Measurement Core Engine
 =============================================================================
 
-Data extraction and processing pipeline designed for analyzing second-order photon correlations, 
-tailored for High-Harmonic Generation (HHG) and non-linear optics experiments.
-
-This module handles both standard (physical) and heralded (virtual) datasets extracted from time-tagging hardware, 
-ensuring accurate computation of quantum optical metrics such as g^(2)(tau) and the Cauchy-Schwarz violation R parameter.
+Handles both standard (physical) and heralded (virtual) datasets extracted from time-tagging hardware, 
+ensuring accurate computation of quantum optical metrics (g^(2) and Cauchy-Schwarz violation R parameter).
 
 Data model (important)
 ----------------------
-For the `g2_heralded_virtual` acquisition format, the pickle stores:
-* PHYSICAL data as scalars only: `counts_physical` / `countrates_physical` (per detector 1..6) and
+For the `g2_heralded_virtual` acquisition format, the pickle always stores:
+* PHYSICAL scalars: `counts_physical` / `countrates_physical` (per detector 1..6) and
   `coincidences_twofold_physical` (integrated two-fold coincidences for all 15 detector pairs).
-* VIRTUAL data (per merged harmonic Hn = T+R) as scalars AND as full correlation histograms
-  (`correlations_virtual`). No physical per-detector histogram is recorded.
+* VIRTUAL data (per merged harmonic Hn = T+R): scalars and full correlation histograms
+  (`correlations_virtual`).
+
+Newer acquisitions ALSO store the per-detector histograms `correlations_physical` (all 15 detector pairs). 
+The loader detects this via `self.has_physical_histograms` and the pipeline adapts automatically.
 
 Consequently:
-* The physical g^(2)(0) is computed from the scalar physical coincidences (`compute_g2_direct`).
-  This is the artifact-free, physically meaningful observable and is the default.
-* Histogram-based methods (`compute_g2_delay`, coherence traces) can only read the VIRTUAL
-  histograms, so they are explicitly virtual. There is NO silent physical<->virtual fallback.
+* The physical g^(2)(0) is computed from the scalar physical coincidences (`compute_g2_direct`) and
+  is always available and artifact-free; it is the primary observable.
+* Histogram methods (`compute_g2_delay`, coherence traces) select their data with `source`:
+  'auto' uses the physical histogram when present and falls back to the virtual one otherwise.
 
 Key Features
 ------------
 * Automated T0 Tracking: Dynamically calculates global T0 shifts to automatically compensate for large, arbitrary hardware delays.
-* Physical-first processing: g^(2) and R default to the physical scalar coincidences; virtual histograms are used only where no physical equivalent exists, and are never relabelled as physical.
+* Physical-first processing: scalar g^(2) (direct) and, when available, physical histograms are preferred; virtual histograms are used only as a fallback and are never relabelled as physical.
 * Self-correlation artifact removal: zero-lag self-coincidence spikes in virtual auto-correlation histograms (Hn x Hn) are suppressed.
 
 Author: Simon WITTMANN
@@ -44,18 +44,13 @@ class HBTMeasurement:
     def __init__(self, pkl_filepath):
         self.pkl_path = Path(pkl_filepath)
         self.dir_path = self.pkl_path.parent
+        self.run_dir = self.dir_path.parent if self.dir_path.name.upper() == "MERGED" else self.dir_path
         
         with open(self.pkl_path, 'rb') as f:
             self.raw_dump = pickle.load(f)
-            
-        json_path = self.dir_path / "general_parameters.json"
         
-        if json_path.exists():
-            with open(json_path, 'r') as f:
-                self.params = json.load(f)
-        else:
-            print(f"Warning: Metadata JSON missing for {self.pkl_path.stem}. Using pickle defaults.")
-            self.params = self.raw_dump.get('Parameters', {})
+        params_raw = self.raw_dump.get('Parameters', {})
+        self.params = params_raw.get('general', params_raw)
 
         tt = self.params.get('timetagging', {})
         c_raw = tt.get('channels', [1, 2, 3, 4, 5, 6]) 
@@ -66,8 +61,6 @@ class HBTMeasurement:
         
         self.tau_res_ps = float(tt.get('binwidth_ps', 100))
         self.rep_rate_hz = float(self.params.get('laser', {}).get('rep_rate_hz', 21e6))
-        # The laser repetition period is known exactly from the metadata, so there is no need
-        # to estimate it from the histogram peak spacing.
         self.rep_period_ns = (1.0 / self.rep_rate_hz) * 1e9
         
         try:
@@ -76,7 +69,8 @@ class HBTMeasurement:
             self.duration = 60.0 * 1e12 
             
         self.data = self.raw_dump.get('data', self.raw_dump)
-
+        self.has_physical_histograms = bool(self.data.get('correlations_physical'))
+        self.has_virtual_histograms = bool(self.data.get('correlations_virtual'))
         self._t0_cache = {}
         self._parse_filename_metadata()
 
@@ -90,7 +84,6 @@ class HBTMeasurement:
         date_match = re.search(r'(\d{4}-\d{2}-\d{2})', stem)
         self.date = date_match.group(1) if date_match else self.params.get('date', "Unknown Date")
 
-        # Power: prefer the numeric value stored in the pickle, fall back to the filename token.
         self.power_mw = exp.get('laser_power')
         if self.power_mw is None:
             m = re.search(r'(\d+(?:\.\d+)?)mW', stem)
@@ -103,8 +96,7 @@ class HBTMeasurement:
         self.binwidth_ps = float(tt.get('binwidth_ps', self.tau_res_ps))
         self.duration_s = self.duration * 1e-12
         self.rotation_stage = exp.get('rotation_stage')
-
-        self.filter_label, self.polarization = self._parse_run_conditions(self.dir_path.name)
+        self.filter_label, self.polarization = self._parse_run_conditions(self.run_dir.name)
 
     @staticmethod
     def _parse_run_conditions(dirname):
@@ -122,7 +114,10 @@ class HBTMeasurement:
             polarization = "No pol." if p.group(1) else f"Pol. P{p.group(2)}"
         return filter_label, polarization
 
-    # ---------------- Human-readable metadata for plot titles / legends ----------------
+
+
+
+    # ---------------- Readable metadata for plot titles / legends ----------------
 
     def acquisition_essentials(self):
         """The few fields worth showing by default: sample, power, filter, polarisation."""
@@ -220,6 +215,7 @@ class HBTMeasurement:
 
 
 
+
     # ---------------- Extraction (explicit physical vs virtual, no silent fallback) ----------------
 
     def _get_channel_key(self, target_dict, c1, c2, is_virtual):
@@ -231,19 +227,35 @@ class HBTMeasurement:
         return next((k for k in keys if k in target_dict), None)
 
 
-    def get_correlation_trace(self, c1, c2, is_virtual=True):
-        """Return a correlation HISTOGRAM as (tau_ns, counts).
-
-        NOTE: in this acquisition format only VIRTUAL (merged-harmonic) histograms are stored,
-        so this method reads `correlations_virtual` by default. Physical per-detector histograms
-        are not recorded; requesting `is_virtual=False` returns (None, None) rather than silently
-        substituting virtual data. For a physical g^(2)(0) use `compute_g2_direct`.
-
-        Auto-correlations (Hn x Hn) of a merged virtual channel contain a non-physical
-        self-coincidence spike at exactly tau=0; that single zero-lag bin is suppressed here.
+    def resolve_source(self, source='auto'):
+        """Map a requested histogram source to the one actually used.
+        'auto'     -> 'physical' if per-detector histograms exist, otherwise 'virtual'
+        'physical' -> 'physical'
+        'virtual'  -> 'virtual'
         """
+        if source == 'auto':
+            return 'physical' if self.has_physical_histograms else 'virtual'
+        return source
+
+
+    def get_correlation_trace(self, c1, c2, source='auto'):
+        """Return a correlation HISTOGRAM as (tau_ns, counts) for the detector pair (c1, c2).
+
+        `source` selects which histogram set to read:
+          * 'auto'     : physical per-detector histogram if present, else the virtual one (default),
+          * 'physical' : the genuine (c1, c2) cross-correlation (no fallback),
+          * 'virtual'  : the merged-harmonic histogram (no fallback).
+
+        Time bins are converted from ps to ns. For a VIRTUAL auto-correlation (Hn x Hn) the single
+        non-physical self-coincidence bin at tau=0 is suppressed; physical histograms never need this.
+        Returns (None, None) when the requested histogram is not available.
+        """
+        used = self.resolve_source(source)
+        is_virtual = (used == 'virtual')
+
         store = 'correlations_virtual' if is_virtual else 'correlations_physical'
         target_dict = self.data.get(store, {})
+
         key = self._get_channel_key(target_dict, c1, c2, is_virtual)
         if key is None:
             return None, None
@@ -262,6 +274,7 @@ class HBTMeasurement:
 
         if is_virtual and self._get_virtual_name(c1) == self._get_virtual_name(c2):
             y = self._suppress_self_correlation(x, y)
+
         return x, y
 
 
@@ -311,17 +324,17 @@ class HBTMeasurement:
 
     # ---------------- T0 Tracking ----------------
 
-    def calculate_t0_shift(self, c1, c2, rep_period_ns=None):
-        """Locate the central peak of the (virtual) histogram and return its centroid in ns.
+    def calculate_t0_shift(self, c1, c2, source='auto'):
+        """Locate the central peak of the correlation histogram and return its centroid in ns.
 
         This absorbs the residual electronic/optical delay so the central and side peaks can be
         windowed correctly. The repetition period itself is known from the metadata
         (`self.rep_period_ns`) and is no longer estimated from the data.
         """
-        key = f"t0_{c1}-{c2}"
+        key = f"t0_{c1}-{c2}_{self.resolve_source(source)}"
         if key in self._t0_cache: return self._t0_cache[key]
             
-        x, y = self.get_correlation_trace(c1, c2)
+        x, y = self.get_correlation_trace(c1, c2, source=source)
         if x is None or len(y) == 0: return 0.0
         
         approx_t0 = x[np.argmax(y)]
@@ -338,18 +351,18 @@ class HBTMeasurement:
 
     # ---------------- Quantum Calculations ----------------
 
-    def compute_g2_delay(self, c1, c2, tau_in_ns, num_side_peaks=3):
+    def compute_g2_delay(self, c1, c2, tau_in_ns, num_side_peaks=3, source='auto'):
         """Pulsed g^(2)(0) from the histogram peak-area ratio (central / mean side peak).
 
-        Histograms only exist for virtual (merged-harmonic) channels in this format, so this
-        is intrinsically a VIRTUAL estimate. The zero-lag self-correlation artifact of auto
-        pairs is already suppressed in `get_correlation_trace`.
+        Uses the physical per-detector histogram when available (`source='auto'`), otherwise the
+        virtual one. The zero-lag self-correlation artifact of virtual auto pairs is already
+        suppressed in `get_correlation_trace`.
         """
-        x, y = self.get_correlation_trace(c1, c2, is_virtual=True)
+        x, y = self.get_correlation_trace(c1, c2, source=source)
         if x is None: return np.nan
 
         rep_period_ns = self.rep_period_ns
-        t0_shift = self.calculate_t0_shift(c1, c2)
+        t0_shift = self.calculate_t0_shift(c1, c2, source=source)
         
         central_counts = np.sum(y[(x >= t0_shift - tau_in_ns/2) & (x <= t0_shift + tau_in_ns/2)])
         total_side, valid = 0, 0
@@ -385,11 +398,28 @@ class HBTMeasurement:
         return (n_pulse * n_12) / (n_1 * n_2)
 
 
+    def g2(self, c1, c2, tau_in_ns=4.0, method='delay', source='auto'):
+        """Unified g^(2)(0) accessor by `method`:
+          * 'delay'    : pulsed peak-area ratio at integration window `tau_in_ns` (physical hist.
+                         when available via `source='auto'`). Best for a fixed-window power scan.
+          * 'direct'   : scalar physical coincidences (window fixed at acquisition, `tau_in_ns` unused).
+          * 'heralded' : merged-harmonic (virtual) peak normalised by virtual singles.
+        """
+        if method == 'delay':
+            return self.compute_g2_delay(c1, c2, tau_in_ns, source=source)
+        if method == 'heralded':
+            return self.compute_g2_heralded(c1, c2, tau_in_ns)
+        return self.compute_g2_direct(c1, c2, tau_in_ns)
+
+
     def compute_g2_heralded(self, c1, c2, tau_in_ns):
-        x, y = self.get_correlation_trace(c1, c2, is_virtual=True)
+        """Heralded g^(2) on the merged-harmonic (virtual) channels: virtual histogram peak
+        normalised by the virtual singles. This metric is intrinsically about the merged
+        channels, so it always reads the virtual data."""
+        x, y = self.get_correlation_trace(c1, c2, source='virtual')
         if x is None: return np.nan
             
-        t0_shift = self.calculate_t0_shift(c1, c2)
+        t0_shift = self.calculate_t0_shift(c1, c2, source='virtual')
         
         n_12 = float(np.sum(y[(x >= t0_shift - tau_in_ns/2) & (x <= t0_shift + tau_in_ns/2)]))
         n_1, n_2 = self._get_counts(c1, is_virtual=True), self._get_counts(c2, is_virtual=True)
