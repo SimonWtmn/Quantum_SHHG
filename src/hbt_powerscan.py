@@ -160,7 +160,8 @@ class PowerScanAnalyzer:
             km, kn = self.K[m], self.K[n]
         else:
             km, kn = self.perturbative_slope(m, n_fit)[0], self.perturbative_slope(n, n_fit)[0]
-        return (self.g2_cross[(m, n)] - 1.0) / (np.asarray(km) * np.asarray(kn))
+        return (self.g2_cross[(m, n)] - 1.0) / n*m
+        # return (self.g2_cross[(m, n)] - 1.0) / (np.asarray(km) * np.asarray(kn))
 
 
     def inferred_g2_0(self, slope='local', n_fit=None):
@@ -282,6 +283,7 @@ class PowerScanAnalyzer:
         ax.axhline(1.0, color='#313131', ls='--', lw=1.3, alpha=0.7)
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
         ax.set_ylabel(r"$g^{(2)}(0)$")
+        ax.set_ylim(1, 1.4)
         h, lab = ax.get_legend_handles_labels()
         h.append(Line2D([0], [0], color='#313131', ls='--', lw=1.3))
         lab.append(r"uncorrelated ($g^{(2)}=1$)")
@@ -312,7 +314,7 @@ class PowerScanAnalyzer:
             extra_l.append(r"$\pm1\sigma$ across harmonics")
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
         ax.set_ylabel(r"$\left(g^{(2)}_n - 1\right)/K^2(n)$")
-        ax.set_ylim(bottom=0)
+        ax.set_ylim(-0.05, 0.05)
         h, lab = ax.get_legend_handles_labels()
         h += extra_h; lab += extra_l
         return self._finish(fig, ax, own,
