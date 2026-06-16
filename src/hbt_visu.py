@@ -143,7 +143,41 @@ class GridVisualizer:
 
 # ---------------- 1. Coherence ----------------
 
-    def plot_coherence(self, c1=None, c2=None, time_window_ns=5.0, xlim=None, integration_window_ns=None):
+    @staticmethod
+    def _normalize_coh(delta_t, y, x_bounds, normalize):
+        """Scale a coherence trace for display. `normalize`:
+          * None    -> counts in thousands (raw shape, absolute scale),
+          * 'peak'  -> divided by its in-window maximum (every trace peaks at 1),
+          * 'area'  -> divided by its in-window integral (unit area).
+        Peak/area make traces of very different amplitude (e.g. a power scan) directly
+        comparable; the reference is taken inside the visible window x_bounds."""
+        if normalize in ('peak', 'max', 'area'):
+            inwin = (delta_t >= x_bounds[0]) & (delta_t <= x_bounds[1])
+            sel = y[inwin]
+            if normalize == 'area':
+                ref = float(np.sum(sel))
+            else:
+                ref = float(np.max(sel)) if sel.size else 0.0
+            return y / ref if ref > 0 else y
+        return y * 1e-3
+
+    @staticmethod
+    def _coh_ylabel(normalize):
+        return {
+            'peak': r"Normalised counts (peak $=1$)",
+            'max': r"Normalised counts (peak $=1$)",
+            'area': r"Normalised counts (unit area)",
+        }.get(normalize, r"Counts $N \times 10^3$")
+
+    def plot_coherence(self, c1=None, c2=None, time_window_ns=5.0, xlim=None,
+                       integration_window_ns=None, normalize=None, logy=False, ylim=None):
+        """Coherence (correlation histogram) spectrum.
+
+        For multi-run comparisons the raw count amplitudes differ hugely (they scale with power),
+        which makes an overlay unreadable; set `normalize='peak'` (or 'area') to compare the
+        *shapes* on a common scale. `logy` uses a log count axis, `ylim` fixes the y-range, and
+        `xlim` (a (lo, hi) tuple or a single half-width) sets the delay window.
+        """
         colors = self.run_colors
 
         if xlim is None:
@@ -152,6 +186,10 @@ class GridVisualizer:
             x_bounds = (-xlim, xlim) 
         else:
             x_bounds = xlim
+        # By default, overlaying several runs is much clearer with peak-normalised shapes.
+        if normalize is None and len(self.runs) > 1:
+            normalize = 'peak'
+        ylabel = self._coh_ylabel(normalize)
 
         # SINGLE PLOT
         if c1 is not None and c2 is not None:
@@ -167,16 +205,20 @@ class GridVisualizer:
                     delta_t = x - t0
                     
                     mask = (delta_t >= x_bounds[0] - 1.0) & (delta_t <= x_bounds[1] + 1.0)
-                    
-                    ax.step(delta_t[mask], y[mask]*1e-3, where='mid', color=colors[idx], lw=1.2, label=self.labels[idx])
-                    if len(self.runs) == 1: ax.fill_between(delta_t[mask], y[mask]*1e-3, step='mid', color=colors[idx], alpha=0.3)
+                    yv = self._normalize_coh(delta_t[mask], y[mask], x_bounds, normalize)
+                    lw = 1.2 if len(self.runs) <= 6 else 1.0
+                    ax.step(delta_t[mask], yv, where='mid', color=colors[idx], lw=lw,
+                            alpha=0.85 if len(self.runs) > 1 else 1.0, label=self.labels[idx])
+                    if len(self.runs) == 1: ax.fill_between(delta_t[mask], yv, step='mid', color=colors[idx], alpha=0.3)
                 except KeyError: pass
             
             if integration_window_ns is not None:
                 ax.axvspan(-integration_window_ns / 2, integration_window_ns / 2, color="#ea4432", alpha=0.3, label=r'Fen\^etre $\tau_{in}$')
             
-            ax.set_xlabel(r"$\Delta t$ (ns)"); ax.set_ylabel(r"Counts $N \times 10^3$")
+            ax.set_xlabel(r"$\Delta t$ (ns)"); ax.set_ylabel(ylabel)
             ax.set_xlim(x_bounds)
+            if logy: ax.set_yscale('log')
+            if ylim is not None: ax.set_ylim(ylim)
             ax.grid(True, alpha=0.3)
             self._finalize(fig, ax, f"Coherence Spectrum ({self.histogram_source}): {phys_name}")
             plt.show()
@@ -211,9 +253,11 @@ class GridVisualizer:
                         t0 = run.calculate_t0_shift(ch1, ch2)
                         delta_t = x - t0
                         mask = (delta_t >= x_bounds[0] - 1.0) & (delta_t <= x_bounds[1] + 1.0)
-                        
-                        ax.step(delta_t[mask], y[mask]*1e-3, where='mid', color=colors[idx], lw=1.2, label=self.labels[idx])
-                        if len(self.runs) == 1: ax.fill_between(delta_t[mask], y[mask]*1e-3, step='mid', color=colors[idx], alpha=0.3)
+                        yv = self._normalize_coh(delta_t[mask], y[mask], x_bounds, normalize)
+                        lw = 1.2 if len(self.runs) <= 6 else 1.0
+                        ax.step(delta_t[mask], yv, where='mid', color=colors[idx], lw=lw,
+                                alpha=0.85 if len(self.runs) > 1 else 1.0, label=self.labels[idx])
+                        if len(self.runs) == 1: ax.fill_between(delta_t[mask], yv, step='mid', color=colors[idx], alpha=0.3)
                     except KeyError: pass
 
                 if integration_window_ns is not None:
@@ -223,9 +267,11 @@ class GridVisualizer:
 
                 ax.set_title(title)
                 ax.set_xlim(x_bounds)
+                if logy: ax.set_yscale('log')
+                if ylim is not None: ax.set_ylim(ylim)
                 ax.grid(True, alpha=0.3)
                 if i == 4: ax.set_xlabel(r"$\Delta t$ (ns)")
-                if j == 0: ax.set_ylabel(r"Counts $N \times 10^3$")
+                if j == 0: ax.set_ylabel(ylabel)
 
         self._finalize(fig, axes, f"Coherence Spectrum Matrix ({self.histogram_source} channels)")
         plt.show()
@@ -236,7 +282,11 @@ class GridVisualizer:
 
     # ---------------- 2. G2 Visualization ----------------
 
-    def plot_g2(self, c1=None, c2=None, methods=None, tau_min=0.3, tau_max=30.0, step=0.6):
+    def plot_g2(self, c1=None, c2=None, methods=None, tau_min=0.3, tau_max=30.0, step=0.6,
+                xlim=None, ylim=(0.9, 1.6)):
+        """Integration-window sweep of g^(2)(0). `ylim` defaults to (0.9, 1.6) to zoom on the
+        fluctuations; pass another (lo, hi) tuple to rescale or None to autoscale. `xlim`
+        overrides the displayed tau range (default = full [tau_min, tau_max])."""
         if methods is None:
             methods = ['direct']
         tau_in_ns = np.arange(tau_min, tau_max, step)
@@ -244,7 +294,7 @@ class GridVisualizer:
         if c1 is not None and c2 is not None:
             fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
             phys_name = self.runs[0]._get_physical_name(c1, c2)
-            self._fill_ax_g2(ax, c1, c2, tau_in_ns, methods)
+            self._fill_ax_g2(ax, c1, c2, tau_in_ns, methods, xlim=xlim, ylim=ylim)
             ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)"); ax.set_ylabel(r"$g^{(2)}(0)$")
             self._finalize(fig, ax, f"Integration Sweep: {phys_name}")
             plt.show()
@@ -268,7 +318,7 @@ class GridVisualizer:
                     ax.set_visible(False)
                     continue
                 
-                self._fill_ax_g2(ax, ch1_ref, ch2_ref, tau_in_ns, methods)
+                self._fill_ax_g2(ax, ch1_ref, ch2_ref, tau_in_ns, methods, xlim=xlim, ylim=ylim)
                 ax.set_title(title)
                 if i == 4: ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
                 if j == 0: ax.set_ylabel(r"$g^{(2)}(0)$")
@@ -277,7 +327,7 @@ class GridVisualizer:
         plt.show()
         return fig, axes
 
-    def _fill_ax_g2(self, ax, ch1_ref, ch2_ref, tau_in_ns, methods):
+    def _fill_ax_g2(self, ax, ch1_ref, ch2_ref, tau_in_ns, methods, xlim=None, ylim=(0.9, 1.6)):
         max_y = 2.5
         has_data = False
         
@@ -309,8 +359,9 @@ class GridVisualizer:
         if not has_data: return
 
         final_max_y = max(1.2, max_y)
-        ax.set_ylim(0.9, 1.6)
-        ax.set_xlim(tau_in_ns[0], tau_in_ns[-1])
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        ax.set_xlim(xlim if xlim is not None else (tau_in_ns[0], tau_in_ns[-1]))
 
         ax.axhspan(0, 1, color='#2ecc71', alpha=0.05)    # Anti-bunching 
         ax.axhspan(1, 2, color='#f1c40f', alpha=0.05)    # Bunching
@@ -343,7 +394,11 @@ class GridVisualizer:
 
     # ---------------- 3. R Parameter Visualization ----------------
 
-    def plot_R(self, cross_pair=None, auto_pair_1=None, auto_pair_2=None, methods=None, tau_min=0.3, tau_max=30.0, step=0.6):
+    def plot_R(self, cross_pair=None, auto_pair_1=None, auto_pair_2=None, methods=None,
+               tau_min=0.3, tau_max=30.0, step=0.6, xlim=None, ylim=(0.8, 1.2)):
+        """Integration-window sweep of the Cauchy-Schwarz R. `ylim` defaults to (0.8, 1.2) to
+        zoom on the fluctuations; pass another (lo, hi) tuple to rescale or None to autoscale.
+        `xlim` overrides the displayed tau range (default = full [tau_min, tau_max])."""
         if methods is None:
             methods = ['direct']
         tau_in_ns = np.arange(tau_min, tau_max, step)
@@ -351,7 +406,7 @@ class GridVisualizer:
         if cross_pair is not None and auto_pair_1 is not None and auto_pair_2 is not None:
             fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
             phys_name = self.runs[0]._get_physical_name(cross_pair[0], cross_pair[1])
-            self._fill_ax_R(ax, cross_pair, auto_pair_1, auto_pair_2, tau_in_ns, methods)
+            self._fill_ax_R(ax, cross_pair, auto_pair_1, auto_pair_2, tau_in_ns, methods, xlim=xlim, ylim=ylim)
             ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)"); ax.set_ylabel(r"$R$ Parameter")
             self._finalize(fig, ax, f"Cauchy-Schwarz $R$ Sweep: {phys_name}")
             plt.show()
@@ -371,7 +426,7 @@ class GridVisualizer:
                     ax.set_visible(False)
                     continue
                 
-                self._fill_ax_R(ax, cross_ref, autoA_ref, autoB_ref, tau_in_ns, methods)
+                self._fill_ax_R(ax, cross_ref, autoA_ref, autoB_ref, tau_in_ns, methods, xlim=xlim, ylim=ylim)
                 ax.set_title(f"$R_{{{hA}{hB}}}$ ({row})")
                 if i == 3: ax.set_xlabel(r"Integration window $\tau_{in}$ (ns)")
                 if j == 0: ax.set_ylabel(r"$R$ Parameter")
@@ -380,7 +435,7 @@ class GridVisualizer:
         plt.show()
         return fig, axes
 
-    def _fill_ax_R(self, ax, cross_ref, autoA_ref, autoB_ref, tau_in_ns, methods):
+    def _fill_ax_R(self, ax, cross_ref, autoA_ref, autoB_ref, tau_in_ns, methods, xlim=None, ylim=(0.8, 1.2)):
         max_y = 2
         has_data = False
         
@@ -422,8 +477,9 @@ class GridVisualizer:
         ax.axhspan(0, 1, color='#9b59b6', alpha=0.08)
         ax.axhspan(1, 100, color="#dd76b4", alpha=0.15)
         
-        ax.set_ylim(0.8, 1.2)
-        ax.set_xlim(tau_in_ns[0], tau_in_ns[-1])
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        ax.set_xlim(xlim if xlim is not None else (tau_in_ns[0], tau_in_ns[-1]))
         ax.grid(True, alpha=0.3)
 
 
@@ -480,7 +536,7 @@ class GridVisualizer:
         order = np.argsort(powers)
         return powers[order], vals[order]
 
-    def _plot_power_series(self, ax, powers, vals, method, ref_line=1.0):
+    def _plot_power_series(self, ax, powers, vals, method, ref_line=1.0, xlim=None, ylim=None):
         finite = np.isfinite(vals)
         if not finite.any():
             return False
@@ -490,15 +546,22 @@ class GridVisualizer:
                 label=self.method_labels.get(method, method.capitalize()))
         if ref_line is not None:
             ax.axhline(ref_line, color='#313131', ls='--', lw=1.2, alpha=0.6)
-        lo, hi = min(v.min(), ref_line or v.min()), max(v.max(), ref_line or v.max())
-        pad = 0.08 * (hi - lo) if hi > lo else max(0.05, abs(hi) * 0.05)
-        ax.set_ylim(lo - pad, hi + pad)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        else:
+            lo, hi = min(v.min(), ref_line or v.min()), max(v.max(), ref_line or v.max())
+            pad = 0.08 * (hi - lo) if hi > lo else max(0.05, abs(hi) * 0.05)
+            ax.set_ylim(lo - pad, hi + pad)
+        if xlim is not None:
+            ax.set_xlim(xlim)
         ax.grid(True, alpha=0.3)
         return True
 
-    def plot_power_scan_g2(self, c1=None, c2=None, tau_in_ns=4.0, method='delay'):
+    def plot_power_scan_g2(self, c1=None, c2=None, tau_in_ns=4.0, method='delay',
+                           xlim=None, ylim=None):
         """g^(2)(0) vs pump power at a fixed integration window.
-        Single pair if (c1, c2) given, otherwise the full 5x3 auto/cross matrix."""
+        Single pair if (c1, c2) given, otherwise the full 5x3 auto/cross matrix.
+        `xlim`/`ylim` set the axis ranges ((lo, hi) tuples); ylim=None autoscales to the data."""
         m_name = self.method_labels.get(method, method.capitalize())
         base = rf"$g^{{(2)}}(0)$ vs pump power  ($\tau_{{in}} = {tau_in_ns:g}$ ns, {m_name})"
 
@@ -506,7 +569,7 @@ class GridVisualizer:
             fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
             phys_name = self.runs[0]._get_physical_name(c1, c2)
             powers, vals = self.g2_vs_power(c1, c2, tau_in_ns, method)
-            self._plot_power_series(ax, powers, vals, method, ref_line=1.0)
+            self._plot_power_series(ax, powers, vals, method, ref_line=1.0, xlim=xlim, ylim=ylim)
             ax.set_xlabel(r"Pump power $P$ (mW)"); ax.set_ylabel(r"$g^{(2)}(0)$")
             self._finalize(fig, ax, f"{base}: {phys_name}")
             plt.show()
@@ -532,7 +595,7 @@ class GridVisualizer:
                     ax.set_visible(False); continue
 
                 powers, vals = self.g2_vs_power(r1, r2, tau_in_ns, method)
-                self._plot_power_series(ax, powers, vals, method, ref_line=1.0)
+                self._plot_power_series(ax, powers, vals, method, ref_line=1.0, xlim=xlim, ylim=ylim)
                 ax.set_title(title)
                 if i == 4: ax.set_xlabel(r"Pump power $P$ (mW)")
                 if j == 0: ax.set_ylabel(r"$g^{(2)}(0)$")
@@ -542,9 +605,10 @@ class GridVisualizer:
         return fig, axes
 
     def plot_power_scan_R(self, cross_pair=None, auto_pair_1=None, auto_pair_2=None,
-                          tau_in_ns=4.0, method='delay'):
+                          tau_in_ns=4.0, method='delay', xlim=None, ylim=None):
         """Cauchy-Schwarz R vs pump power at a fixed integration window.
-        Single R if the three pairs are given, otherwise the full 4x3 cross matrix."""
+        Single R if the three pairs are given, otherwise the full 4x3 cross matrix.
+        `xlim`/`ylim` set the axis ranges ((lo, hi) tuples); ylim=None autoscales to the data."""
         m_name = self.method_labels.get(method, method.capitalize())
         base = rf"Cauchy-Schwarz $R$ vs pump power  ($\tau_{{in}} = {tau_in_ns:g}$ ns, {m_name})"
 
@@ -552,7 +616,7 @@ class GridVisualizer:
             fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
             phys_name = self.runs[0]._get_physical_name(cross_pair[0], cross_pair[1])
             powers, vals = self.R_vs_power(cross_pair, auto_pair_1, auto_pair_2, tau_in_ns, method)
-            self._plot_power_series(ax, powers, vals, method, ref_line=1.0)
+            self._plot_power_series(ax, powers, vals, method, ref_line=1.0, xlim=xlim, ylim=ylim)
             ax.set_xlabel(r"Pump power $P$ (mW)"); ax.set_ylabel(r"$R$ Parameter")
             self._finalize(fig, ax, f"{base}: {phys_name}")
             plt.show()
@@ -571,7 +635,7 @@ class GridVisualizer:
                     ax.set_visible(False); continue
 
                 powers, vals = self.R_vs_power(cross, autoA, autoB, tau_in_ns, method)
-                self._plot_power_series(ax, powers, vals, method, ref_line=1.0)
+                self._plot_power_series(ax, powers, vals, method, ref_line=1.0, xlim=xlim, ylim=ylim)
                 ax.set_title(f"$R_{{{hA}{hB}}}$ ({row})")
                 if i == 3: ax.set_xlabel(r"Pump power $P$ (mW)")
                 if j == 0: ax.set_ylabel(r"$R$ Parameter")

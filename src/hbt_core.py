@@ -337,6 +337,21 @@ class HBTMeasurement:
         return total if found else np.nan
 
 
+    def channel_intensity(self, ch, kind='countrate'):
+        """Mean intensity of a single PHYSICAL detector (channel number `ch`), used for the
+        per-channel power-scan scaling (H3T, H3R, ... separately rather than the merged Hn).
+          * kind='countrate' -> counts per second (default),
+          * kind='counts'    -> total integrated counts.
+        Returns NaN when the per-detector value is absent.
+        """
+        store = 'countrates_physical' if kind == 'countrate' else 'counts_physical'
+        d = self.data.get(store, {})
+        val = d.get(str(ch))
+        if val is None:
+            return np.nan
+        return float(val[1]) if isinstance(val, (list, tuple)) else float(val)
+
+
     def pump_intensity(self):
         """Driving-field intensity proxy I_0 for the power scan. We only control the average
         pump power, and at fixed geometry I_0 is proportional to it, so the power (mW) is

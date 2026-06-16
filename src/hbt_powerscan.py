@@ -103,6 +103,26 @@ class PowerScanAnalyzer:
             self.g2_auto[n] = np.array(
                 [self._g2_pair(r, f"H{n}T", f"H{n}R") for r in self.runs], dtype=float)
 
+        # Per-detector (physical channel) intensities, so the scaling can be shown arm-by-arm
+        # (H3T, H3R, H4T, ...) and not only as the merged harmonic Hn.
+        self.In_ch, self.chan_names, self.chcolor = {}, [], {}
+        for hi, n in enumerate(self.harmonics):
+            for ai, arm in enumerate(('T', 'R')):
+                name = f"H{n}{arm}"
+                vals, ok = [], True
+                for r in self.runs:
+                    try:
+                        ch = r.get_ch(name)
+                    except KeyError:
+                        ok = False
+                        break
+                    vals.append(r.channel_intensity(ch, self.intensity))
+                if ok:
+                    self.In_ch[name] = np.array(vals, dtype=float)
+                    self.chan_names.append(name)
+                    base = _AUTO_COLORS[hi % len(_AUTO_COLORS)]
+                    self.chcolor[name] = base if arm == 'T' else _CROSS_COLORS[hi % len(_CROSS_COLORS)]
+
         self.g2_cross = {}
         for i, m in enumerate(self.harmonics):
             for n in self.harmonics[i + 1:]:
@@ -148,6 +168,71 @@ class PowerScanAnalyzer:
         return slope, intercept
 
 
+    @staticmethod
+    def _line_sse(x, y):
+        """Sum of squared residuals of a straight-line (log-log) fit; 0 for <2 points."""
+        if len(x) < 2:
+            return 0.0
+        slope, intercept = np.polyfit(x, y, 1)
+        return float(np.sum((y - (slope * x + intercept)) ** 2))
+
+
+    def _auto_breakpoint(self, x, y, min_pts=2):
+        """Index `b` splitting (x, y) into a low-power segment [:b] and a high-power
+        (saturation) segment [b:] so that the combined two-line residual is minimal.
+        Requires at least `min_pts` points on each side; returns None if impossible."""
+        best_b, best_sse = None, np.inf
+        for b in range(min_pts, len(x) - min_pts + 1):
+            sse = self._line_sse(x[:b], y[:b]) + self._line_sse(x[b:], y[b:])
+            if sse < best_sse:
+                best_sse, best_b = sse, b
+        return best_b
+
+
+    def two_segment_fit(self, P, y, n_fit=None, split=None, min_pts=2):
+        """Two free-slope power-law fits of y vs P in log-log: a low-power *perturbative* branch
+        and a high-power *saturation* branch (each slope K is fitted, not imposed).
+
+        `split` chooses where the perturbative regime ends and saturation begins:
+          * None     -> auto-detected breakpoint (minimal combined residual); `n_fit`, if given,
+                        is used instead as the number of perturbative (low-power) points,
+          * int      -> fixed index (first point of the saturation branch).
+
+        Returns a dict with 'lo'/'hi' = (slope, intercept) (each None if absent), the breakpoint
+        index 'b', the saturation onset power 'P_sat', and the masked (P, y) actually used.
+        """
+        P, y = np.asarray(P, float), np.asarray(y, float)
+        good = np.isfinite(P) & np.isfinite(y) & (y > 0)
+        Pg, yg = P[good], y[good]
+        lx, ly = np.log(Pg), np.log(yg)
+
+        out = {'lo': None, 'hi': None, 'b': None, 'P_sat': None, 'P': Pg, 'y': yg}
+        if len(Pg) < 2:
+            return out
+        if len(Pg) < 2 * min_pts:
+            out['lo'] = tuple(np.polyfit(lx, ly, 1))
+            return out
+
+        if split is not None:
+            b = int(split)
+        elif n_fit is not None:
+            b = int(n_fit)
+        else:
+            b = self._auto_breakpoint(lx, ly, min_pts)
+        if b is not None:
+            b = max(min_pts, min(int(b), len(Pg) - min_pts))
+
+        if b is None:
+            out['lo'] = tuple(np.polyfit(lx, ly, 1))
+            return out
+
+        out['b'] = b
+        out['P_sat'] = float(Pg[b])
+        out['lo'] = tuple(np.polyfit(lx[:b], ly[:b], 1))
+        out['hi'] = tuple(np.polyfit(lx[b:], ly[b:], 1))
+        return out
+
+
     def collapse_auto(self, n, slope='local', n_fit=None):
         """(g2_nn - 1) / K^2(n) for harmonic n (should equal g2_0 - 1 for every harmonic)."""
         k = self.K[n] if slope == 'local' else self.perturbative_slope(n, n_fit)[0]
@@ -160,8 +245,8 @@ class PowerScanAnalyzer:
             km, kn = self.K[m], self.K[n]
         else:
             km, kn = self.perturbative_slope(m, n_fit)[0], self.perturbative_slope(n, n_fit)[0]
-        return (self.g2_cross[(m, n)] - 1.0) / n*m
-        # return (self.g2_cross[(m, n)] - 1.0) / (np.asarray(km) * np.asarray(kn))
+        # return (self.g2_cross[(m, n)] - 1.0) / n*m
+        return (self.g2_cross[(m, n)] - 1.0) / (np.asarray(km) * np.asarray(kn))
 
 
     def inferred_g2_0(self, slope='local', n_fit=None):
@@ -225,36 +310,92 @@ class PowerScanAnalyzer:
         return fig, ax
 
 
-    def plot_intensity_scaling(self, ax=None, n_fit=None, show_ideal=True):
-        """Plot 3: log <I_n> vs log I_0. Straight (slope ~ n) then bends at saturation.
+    def plot_intensity_scaling(self, ax=None, n_fit=None, split=None, per_channel=True,
+                               harmonics=None, channels=None, show_ideal=True,
+                               xlim=None, ylim=None):
+        """Plot 3: intensity vs I_0 (log-log) with two fitted power laws per curve.
 
-        Markers = data, solid line = perturbative power-law fit (slope K reported per harmonic),
-        thin grey dashes = the ideal slope K=n anchored on the lowest-power point.
+        Markers = data, solid line = perturbative (low-power) fit, dashed line = saturation
+        (high-power) fit (both slopes K are fitted), and an open ring marks the breakpoint where
+        the scaling rolls over into saturation. Thin grey dots = the ideal slope K=n anchored on
+        the lowest-power point.
+
+        * per_channel=True (default): one curve per physical detector (H3T, H3R, H4T, ...).
+        * per_channel=False: one curve per merged harmonic (H3, H4, H5).
+
+        Toggle what is shown (handy when a cut produces no Hn, e.g. GaAs100 has no H4):
+          * `harmonics` -> iterable of orders to keep, e.g. (3, 5) (default: all),
+          * `channels`  -> explicit list of channel names to keep, e.g. ['H3T', 'H5R']
+                           (per-channel mode only; takes precedence over `harmonics`).
+
+        The breakpoint is auto-detected; override with `split` (int index, or a dict keyed by the
+        curve name / harmonic) or `n_fit` (number of perturbative points). `xlim`/`ylim` set the
+        axis ranges (each a (lo, hi) tuple); None keeps autoscale.
         """
         fig, ax, own = self._ax(ax)
-        xf = np.array([self.I0.min(), self.I0.max()])
-        for n in self.harmonics:
-            c = self.hcolor[n]
-            In = self.In[n]
-            slope, intercept = self.perturbative_slope(n, n_fit)
-            ax.loglog(self.I0, In, 'o', color=c, ms=8,
-                      label=rf"$H_{n}$  ($K_{{\mathrm{{fit}}}}={slope:.2f}$, ideal {n})")
-            ax.loglog(xf, np.exp(intercept) * xf ** slope, '-', color=c, lw=2.0)
+        keep_h = set(self.harmonics if harmonics is None else harmonics)
+        keep_c = set(channels) if channels is not None else None
+        if per_channel:
+            series = [(name, int(name[1:-1]), self.chcolor[name], self.In_ch[name])
+                      for name in self.chan_names]
+            if keep_c is not None:
+                series = [s for s in series if s[0] in keep_c]
+            else:
+                series = [s for s in series if s[1] in keep_h]
+            label_of = lambda name, n: rf"$H_{{{n}}}${name[len(str(n)) + 1:]}"
+        else:
+            series = [(rf"H{n}", n, self.hcolor[n], self.In[n])
+                      for n in self.harmonics if n in keep_h]
+            label_of = lambda name, n: rf"$H_{{{n}}}$"
+
+        any_sat = False
+        for name, n, c, y in series:
+            sp = split.get(name, split.get(n)) if isinstance(split, dict) else split
+            f = self.two_segment_fit(self.I0, y, n_fit=n_fit, split=sp)
+            P, lo, hi, b = f['P'], f['lo'], f['hi'], f['b']
+            if len(P) == 0:
+                continue
+            ax.loglog(P, f['y'], 'o', color=c, ms=7)
+            lab = label_of(name, n)
+            if lo is not None and hi is not None and b is not None:
+                any_sat = True
+                x_lo = np.array([P[0], P[b]])
+                x_hi = np.array([P[b], P[-1]])
+                ax.loglog(x_lo, np.exp(lo[1]) * x_lo ** lo[0], '-', color=c, lw=2.0)
+                ax.loglog(x_hi, np.exp(hi[1]) * x_hi ** hi[0], '--', color=c, lw=2.0)
+                ax.loglog([f['P_sat']], [f['y'][b]], 'o', mfc='none', mec=c, mew=2.0, ms=14)
+                lab += rf": $K={lo[0]:.2f}\!\to\!{hi[0]:.2f}$ (ideal {n})"
+            elif lo is not None:
+                xf = np.array([P.min(), P.max()])
+                ax.loglog(xf, np.exp(lo[1]) * xf ** lo[0], '-', color=c, lw=2.0)
+                lab += rf": $K={lo[0]:.2f}$ (ideal {n})"
             if show_ideal:
-                ax.loglog(xf, In[0] * (xf / self.I0[0]) ** n, '--', color=_IDEAL_GREY, lw=1.1)
+                xf = np.array([P.min(), P.max()])
+                ax.loglog(xf, f['y'][0] * (xf / P[0]) ** n, ':', color=_IDEAL_GREY, lw=1.0)
+            ax.plot([], [], '-', color=c, label=lab)
+
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
-        ax.set_ylabel(r"Harmonic intensity $\langle I_n\rangle$ (counts/s)")
+        ax.set_ylabel(r"Intensity (counts/s)")
         ax.grid(True, which='both', alpha=0.25)
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
         h, lab = ax.get_legend_handles_labels()
+        if any_sat:
+            h.append(Line2D([0], [0], marker='o', mfc='none', mec='0.3', mew=2.0, ls='none', ms=11))
+            lab.append(r"saturation onset")
         if show_ideal:
-            h.append(Line2D([0], [0], color=c, ls='--', lw=1.1))
+            h.append(Line2D([0], [0], color=_IDEAL_GREY, ls=':', lw=1.0))
             lab.append(r"ideal slope $K=n$")
+        ncol = 2 if len(series) > 3 else 1
         return self._finish(fig, ax, own, r"Harmonic intensity scaling $\langle I_n\rangle \sim I_0^{K(n)}$",
-                            h, lab, legend_kw=dict(loc='lower right'))
+                            h, lab, legend_kw=dict(loc='lower right', ncol=ncol))
 
 
-    def plot_local_slope(self, ax=None):
-        """Local exponent K(n) = d ln<I_n>/d ln I_0 vs power; departs from n at saturation."""
+    def plot_local_slope(self, ax=None, xlim=None, ylim=None):
+        """Local exponent K(n) = d ln<I_n>/d ln I_0 vs power; departs from n at saturation.
+        `xlim`/`ylim` set the axis ranges ((lo, hi) tuples); None keeps autoscale."""
         fig, ax, own = self._ax(ax, figsize=(9, 6))
         for n in self.harmonics:
             c = self.hcolor[n]
@@ -263,6 +404,10 @@ class PowerScanAnalyzer:
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
         ax.set_ylabel(r"Local exponent $K(n) = \mathrm{d}\ln\langle I_n\rangle/\mathrm{d}\ln I_0$")
         ax.grid(True, which='both', alpha=0.25)
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
         h, lab = ax.get_legend_handles_labels()
         h.append(Line2D([0], [0], color=_IDEAL_GREY, ls=':', lw=1.4))
         lab.append(r"ideal order $K=n$")
@@ -270,8 +415,12 @@ class PowerScanAnalyzer:
                             h, lab, legend_kw=dict(loc='best'))
 
 
-    def plot_g2_vs_power(self, ax=None, include_cross=False):
-        """Plot 1: g^(2) vs I_0 — a family of distinct curves (one per harmonic / pair)."""
+    def plot_g2_vs_power(self, ax=None, include_cross=False, xlim=None, ylim=(0.9, 1.6)):
+        """Plot 1: g^(2) vs I_0 — a family of distinct curves (one per harmonic / pair).
+
+        `ylim` defaults to (0.9, 1.6) to zoom on the fluctuations; pass another (lo, hi) tuple
+        to rescale or None to autoscale. `xlim` works the same way on the power axis.
+        """
         fig, ax, own = self._ax(ax)
         for n in self.harmonics:
             ax.plot(self.I0, self.g2_auto[n], 'o-', color=self.hcolor[n], ms=7,
@@ -283,7 +432,10 @@ class PowerScanAnalyzer:
         ax.axhline(1.0, color='#313131', ls='--', lw=1.3, alpha=0.7)
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
         ax.set_ylabel(r"$g^{(2)}(0)$")
-        ax.set_ylim(1, 1.4)
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
         h, lab = ax.get_legend_handles_labels()
         h.append(Line2D([0], [0], color='#313131', ls='--', lw=1.3))
         lab.append(r"uncorrelated ($g^{(2)}=1$)")
@@ -291,11 +443,14 @@ class PowerScanAnalyzer:
                             h, lab, legend_kw=dict(ncol=2, loc='best'))
 
 
-    def plot_g2_collapse(self, ax=None, slope='local', include_cross=True, show_mean=True):
+    def plot_g2_collapse(self, ax=None, slope='local', include_cross=True, show_mean=True,
+                         xlim=None, ylim=(0, 0.015)):
         """Plot 2: (g^(2)_n - 1)/K^2(n) vs I_0 — all harmonics should COLLAPSE onto g2_0 - 1.
 
         Auto pairs are divided by K^2(n), cross pairs by K(m)K(n). The black line is the mean
         over all pairs (the inferred pump excess g2_0 - 1), the grey band its 1-sigma spread.
+        `xlim`/`ylim` set the axis ranges ((lo, hi) tuples); pass None to autoscale (handy when
+        the collapsed values fall outside the default zoom window).
         """
         fig, ax, own = self._ax(ax)
         for n in self.harmonics:
@@ -314,7 +469,10 @@ class PowerScanAnalyzer:
             extra_l.append(r"$\pm1\sigma$ across harmonics")
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
         ax.set_ylabel(r"$\left(g^{(2)}_n - 1\right)/K^2(n)$")
-        ax.set_ylim(-0.05, 0.05)
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
         h, lab = ax.get_legend_handles_labels()
         h += extra_h; lab += extra_l
         return self._finish(fig, ax, own,
@@ -322,15 +480,20 @@ class PowerScanAnalyzer:
                             h, lab, legend_kw=dict(ncol=2, loc='upper right'))
 
 
-    def plot_overview(self, slope='local', n_fit=None):
+    def plot_overview(self, slope='local', n_fit=None, split=None, per_channel=True,
+                      harmonics=None, channels=None, g2_ylim=(0.9, 1.6), collapse_ylim=(0, 0.015)):
         """2x2 dashboard mirroring the model: g^(2) vs power, the rescaled collapse, the
-        intensity scaling (log-log) and the local exponent K(n)."""
+        intensity scaling (log-log) and the local exponent K(n).
+
+        `g2_ylim`/`collapse_ylim` zoom panels (1) and (2) (None autoscales); `split`/`n_fit`/
+        `per_channel`/`harmonics`/`channels` control the intensity-scaling fit of panel (3)."""
         fig, axes = plt.subplots(2, 2, figsize=(18, 14), dpi=300)
-        self.plot_g2_vs_power(ax=axes[0, 0], include_cross=True)
+        self.plot_g2_vs_power(ax=axes[0, 0], include_cross=True, ylim=g2_ylim)
         axes[0, 0].set_title(r"(1) $g^{(2)}(0)$ vs pump power", fontsize=15)
-        self.plot_g2_collapse(ax=axes[0, 1], slope=slope)
+        self.plot_g2_collapse(ax=axes[0, 1], slope=slope, ylim=collapse_ylim)
         axes[0, 1].set_title(r"(2) Rescaled collapse $\to g^{(2)}_0 - 1 = \sigma^2$", fontsize=15)
-        self.plot_intensity_scaling(ax=axes[1, 0], n_fit=n_fit)
+        self.plot_intensity_scaling(ax=axes[1, 0], n_fit=n_fit, split=split,
+                                    per_channel=per_channel, harmonics=harmonics, channels=channels)
         axes[1, 0].set_title(r"(3) Intensity scaling $\langle I_n\rangle \sim I_0^{K(n)}$", fontsize=15)
         self.plot_local_slope(ax=axes[1, 1])
         axes[1, 1].set_title(r"(4) Local exponent $K(n)$  (dotted = ideal $n$)", fontsize=15)
