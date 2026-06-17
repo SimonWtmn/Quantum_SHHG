@@ -372,21 +372,6 @@ class GridVisualizer:
         if final_max_y > 2.0: ax.axhline(y=2, color="#313131", linestyle='--', lw=1.5, alpha=0.6)
         if final_max_y > 4.0: ax.axhline(y=4, color="#313131", linestyle='--', lw=1.5, alpha=0.6)
 
-        text_kwargs = {
-            'ha': 'right', 
-            'fontweight': 'bold', 
-            'clip_on': True, 
-            'transform': ax.get_yaxis_transform()
-        }
-        # if max(min(0.5, min(valid) * 1.1), 4.5) < 0.5:
-        #     ax.text(0.98, 0.95, "Anti-bunching", color='#2ecc71', alpha=0.8, **text_kwargs)
-        # if final_max_y > 1.0:
-        #     ax.text(0.98, 1.05, "Bunching", color='#f1c40f', alpha=0.8, **text_kwargs)
-        # if final_max_y > 2.0:
-        #     ax.text(0.98, 2.05, "Super-bunching", color='#e67e22', alpha=0.8, **text_kwargs)
-        # if final_max_y > 4.0:
-        #     ax.text(0.98, 4.05, "Non-physical", color='#e74c3c', alpha=0.8, **text_kwargs)
-
         ax.grid(True, alpha=0.3)
 
 

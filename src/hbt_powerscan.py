@@ -107,7 +107,7 @@ class PowerScanAnalyzer:
         # (H3T, H3R, H4T, ...) and not only as the merged harmonic Hn.
         self.In_ch, self.chan_names, self.chcolor = {}, [], {}
         for hi, n in enumerate(self.harmonics):
-            for ai, arm in enumerate(('T', 'R')):
+            for arm in ('T', 'R'):
                 name = f"H{n}{arm}"
                 vals, ok = [], True
                 for r in self.runs:
@@ -120,8 +120,9 @@ class PowerScanAnalyzer:
                 if ok:
                     self.In_ch[name] = np.array(vals, dtype=float)
                     self.chan_names.append(name)
-                    base = _AUTO_COLORS[hi % len(_AUTO_COLORS)]
-                    self.chcolor[name] = base if arm == 'T' else _CROSS_COLORS[hi % len(_CROSS_COLORS)]
+                    # T arm shares the harmonic's auto colour; R arm uses the cross palette.
+                    palette = _AUTO_COLORS if arm == 'T' else _CROSS_COLORS
+                    self.chcolor[name] = palette[hi % len(palette)]
 
         self.g2_cross = {}
         for i, m in enumerate(self.harmonics):
@@ -146,8 +147,7 @@ class PowerScanAnalyzer:
         if r0.polarization:
             bits.append(r0.polarization)
         bits.append(rf"$P = {self.I0.min():g}$--${self.I0.max():g}$ mW ({len(self.I0)} pts)")
-        method = {'delay': 'delay', 'direct': 'direct', 'heralded': 'heralded'}[self.g2_method]
-        bits.append(rf"$g^{{(2)}}$: {method} ($\tau_{{in}} = {self.tau_in_ns:g}$ ns)")
+        bits.append(rf"$g^{{(2)}}$: {self.g2_method} ($\tau_{{in}} = {self.tau_in_ns:g}$ ns)")
         return "  |  ".join(bits)
 
 
@@ -245,15 +245,21 @@ class PowerScanAnalyzer:
             km, kn = self.K[m], self.K[n]
         else:
             km, kn = self.perturbative_slope(m, n_fit)[0], self.perturbative_slope(n, n_fit)[0]
-        # return (self.g2_cross[(m, n)] - 1.0) / n*m
         return (self.g2_cross[(m, n)] - 1.0) / (np.asarray(km) * np.asarray(kn))
 
 
-    def inferred_g2_0(self, slope='local', n_fit=None):
-        """Indirect estimate of the pump excess g2_0 - 1 = sigma^2, as the mean over all
-        harmonics/pairs of the collapsed curves (returns mean and std arrays vs power)."""
-        stack = [self.collapse_auto(n, slope, n_fit) for n in self.harmonics]
-        stack += [self.collapse_cross(m, n, slope, n_fit) for (m, n) in self.g2_cross]
+    def inferred_g2_0(self, slope='local', n_fit=None, harmonics=None, pairs=None):
+        """Indirect estimate of the pump excess g2_0 - 1 = sigma^2, as the mean (and std) over the
+        collapsed curves vs power. `harmonics`/`pairs` restrict which curves enter the average
+        (default: all); exclude cross pairs entirely with `pairs=[]`. Useful to drop a degenerate
+        harmonic (e.g. one with K~0, whose 1/K^2 collapse blows up). Returns NaN arrays if empty."""
+        keep_h, keep_p = self._resolve_keep(harmonics, pairs)
+        stack = [self.collapse_auto(n, slope, n_fit) for n in self.harmonics if n in keep_h]
+        stack += [self.collapse_cross(m, n, slope, n_fit) for (m, n) in self.g2_cross
+                  if self._keep_pair(m, n, keep_h, keep_p)]
+        if not stack:
+            nan = np.full(len(self.I0), np.nan)
+            return nan, nan
         arr = np.vstack(stack)
         return np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
 
@@ -333,7 +339,7 @@ class PowerScanAnalyzer:
         axis ranges (each a (lo, hi) tuple); None keeps autoscale.
         """
         fig, ax, own = self._ax(ax)
-        keep_h = set(self.harmonics if harmonics is None else harmonics)
+        keep_h, _ = self._resolve_keep(harmonics, None)
         keep_c = set(channels) if channels is not None else None
         if per_channel:
             series = [(name, int(name[1:-1]), self.chcolor[name], self.In_ch[name])
@@ -415,18 +421,47 @@ class PowerScanAnalyzer:
                             h, lab, legend_kw=dict(loc='best'))
 
 
-    def plot_g2_vs_power(self, ax=None, include_cross=False, xlim=None, ylim=(0.9, 1.6)):
+    def _resolve_keep(self, harmonics, pairs):
+        """Normalise the selection arguments shared by the power-scan plots into a harmonic set
+        `keep_h` (all harmonics when `harmonics` is None) and an explicit cross-pair set `keep_p`
+        (None when `pairs` is not given)."""
+        keep_h = set(self.harmonics if harmonics is None else harmonics)
+        keep_p = {tuple(sorted(p)) for p in pairs} if pairs is not None else None
+        return keep_h, keep_p
+
+
+    @staticmethod
+    def _keep_pair(m, n, keep_h, keep_p):
+        """Whether a cross pair (m, n) should be shown given the harmonic set `keep_h` and the
+        optional explicit pair set `keep_p` (which takes precedence)."""
+        if keep_p is not None:
+            return tuple(sorted((m, n))) in keep_p
+        return m in keep_h and n in keep_h
+
+
+    def plot_g2_vs_power(self, ax=None, include_cross=False, harmonics=None, pairs=None,
+                         xlim=None, ylim=(0.9, 1.6)):
         """Plot 1: g^(2) vs I_0 — a family of distinct curves (one per harmonic / pair).
+
+        Toggle what is shown (e.g. to drop a harmonic a given cut does not produce):
+          * `harmonics` -> iterable of orders to keep (default: all); also restricts which cross
+                           pairs appear (both members must be kept),
+          * `pairs`     -> explicit list of cross pairs to keep, e.g. [(3, 5)] (takes precedence).
 
         `ylim` defaults to (0.9, 1.6) to zoom on the fluctuations; pass another (lo, hi) tuple
         to rescale or None to autoscale. `xlim` works the same way on the power axis.
         """
         fig, ax, own = self._ax(ax)
+        keep_h, keep_p = self._resolve_keep(harmonics, pairs)
         for n in self.harmonics:
+            if n not in keep_h:
+                continue
             ax.plot(self.I0, self.g2_auto[n], 'o-', color=self.hcolor[n], ms=7,
                     label=rf"$g^{{(2)}}_{{{n}{n}}}$ auto")
         if include_cross:
             for (m, n) in self.g2_cross:
+                if not self._keep_pair(m, n, keep_h, keep_p):
+                    continue
                 ax.plot(self.I0, self.g2_cross[(m, n)], 's--', color=self.ccolor[(m, n)],
                         ms=6, lw=1.6, label=rf"$g^{{(2)}}_{{{m}{n}}}$ cross")
         ax.axhline(1.0, color='#313131', ls='--', lw=1.3, alpha=0.7)
@@ -444,25 +479,36 @@ class PowerScanAnalyzer:
 
 
     def plot_g2_collapse(self, ax=None, slope='local', include_cross=True, show_mean=True,
-                         xlim=None, ylim=(0, 0.015)):
+                         harmonics=None, pairs=None, xlim=None, ylim=(0, 0.015)):
         """Plot 2: (g^(2)_n - 1)/K^2(n) vs I_0 — all harmonics should COLLAPSE onto g2_0 - 1.
 
         Auto pairs are divided by K^2(n), cross pairs by K(m)K(n). The black line is the mean
-        over all pairs (the inferred pump excess g2_0 - 1), the grey band its 1-sigma spread.
+        over the shown pairs (the inferred pump excess g2_0 - 1), the grey band its 1-sigma spread.
+
+        Toggle what is shown (and what the mean is taken over):
+          * `harmonics` -> iterable of orders to keep (default: all); also restricts cross pairs,
+          * `pairs`     -> explicit list of cross pairs to keep, e.g. [(3, 5)] (takes precedence).
+
         `xlim`/`ylim` set the axis ranges ((lo, hi) tuples); pass None to autoscale (handy when
         the collapsed values fall outside the default zoom window).
         """
         fig, ax, own = self._ax(ax)
+        keep_h, keep_p = self._resolve_keep(harmonics, pairs)
         for n in self.harmonics:
+            if n not in keep_h:
+                continue
             ax.plot(self.I0, self.collapse_auto(n, slope), 'o-', color=self.hcolor[n], ms=7,
                     label=rf"$H_{n}$ auto $/K^2$")
         if include_cross:
             for (m, n) in self.g2_cross:
+                if not self._keep_pair(m, n, keep_h, keep_p):
+                    continue
                 ax.plot(self.I0, self.collapse_cross(m, n, slope), 's--', color=self.ccolor[(m, n)],
                         ms=6, lw=1.6, label=rf"$H_{m}H_{n}$ cross $/K_mK_n$")
         extra_h, extra_l = [], []
         if show_mean:
-            mean, std = self.inferred_g2_0(slope)
+            mean, std = self.inferred_g2_0(slope, harmonics=harmonics,
+                                           pairs=(pairs if include_cross else []))
             ax.plot(self.I0, mean, 'k-', lw=2.8, label=r"mean $= g^{(2)}_0 - 1$")
             ax.fill_between(self.I0, mean - std, mean + std, color='k', alpha=0.13)
             extra_h.append(Patch(facecolor='k', alpha=0.13))
@@ -481,16 +527,20 @@ class PowerScanAnalyzer:
 
 
     def plot_overview(self, slope='local', n_fit=None, split=None, per_channel=True,
-                      harmonics=None, channels=None, g2_ylim=(0.9, 1.6), collapse_ylim=(0, 0.015)):
+                      harmonics=None, channels=None, pairs=None,
+                      g2_ylim=(0.9, 1.6), collapse_ylim=(0, 0.015)):
         """2x2 dashboard mirroring the model: g^(2) vs power, the rescaled collapse, the
         intensity scaling (log-log) and the local exponent K(n).
 
-        `g2_ylim`/`collapse_ylim` zoom panels (1) and (2) (None autoscales); `split`/`n_fit`/
-        `per_channel`/`harmonics`/`channels` control the intensity-scaling fit of panel (3)."""
+        `g2_ylim`/`collapse_ylim` zoom panels (1) and (2) (None autoscales). `harmonics`/`pairs`
+        select which harmonics/cross pairs are shown across panels (1)-(3); `channels`/`split`/
+        `n_fit`/`per_channel` further control the intensity-scaling fit of panel (3)."""
         fig, axes = plt.subplots(2, 2, figsize=(18, 14), dpi=300)
-        self.plot_g2_vs_power(ax=axes[0, 0], include_cross=True, ylim=g2_ylim)
+        self.plot_g2_vs_power(ax=axes[0, 0], include_cross=True, harmonics=harmonics,
+                              pairs=pairs, ylim=g2_ylim)
         axes[0, 0].set_title(r"(1) $g^{(2)}(0)$ vs pump power", fontsize=15)
-        self.plot_g2_collapse(ax=axes[0, 1], slope=slope, ylim=collapse_ylim)
+        self.plot_g2_collapse(ax=axes[0, 1], slope=slope, harmonics=harmonics, pairs=pairs,
+                              ylim=collapse_ylim)
         axes[0, 1].set_title(r"(2) Rescaled collapse $\to g^{(2)}_0 - 1 = \sigma^2$", fontsize=15)
         self.plot_intensity_scaling(ax=axes[1, 0], n_fit=n_fit, split=split,
                                     per_channel=per_channel, harmonics=harmonics, channels=channels)
