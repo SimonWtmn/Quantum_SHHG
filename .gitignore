@@ -1,11 +1,11 @@
-legacy/
+# legacy/
 
-data/
+# data/
 
-results/
+# results/
 
-SHHGvenv/
+# SHHGvenv/
 
-*scratchpad*
-*sandbox*
-*run*
+# *scratchpad*
+# *sandbox*
+# *run*

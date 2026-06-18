@@ -60,7 +60,8 @@ class HBTMeasurement:
         self.channel_map = dict(zip([int(c) for c in channels], modes))
         
         self.tau_res_ps = float(tt.get('binwidth_ps', 100))
-        self.rep_rate_hz = float(self.params.get('laser', {}).get('rep_rate_hz', 21e6))
+        self.rep_rate_hz = 18.66e6
+        # self.rep_rate_hz = float(self.params.get('laser', {}).get('rep_rate_hz', 21e6))
         self.rep_period_ns = (1.0 / self.rep_rate_hz) * 1e9
         
         try:
@@ -427,6 +428,7 @@ class HBTMeasurement:
             for sign in [-1, 1]:
                 center = t0_shift + sign * (i * rep_period_ns)
                 total_side += np.sum(y[(x >= center - tau_in_ns/2) & (x <= center + tau_in_ns/2)])
+                # print(total_side)
                 valid += 1
 
         if valid == 0 or total_side == 0: return np.nan

@@ -1,0 +1,180 @@
+2026-06-12 17:24:10,935 [INFO]  Script start.
+2026-06-12 17:24:10,945 [INFO]  ====================GENERAL SETTINGS====================
+2026-06-12 17:24:10,946 [INFO]  {'date': '2026-06-12', 'time': '17-24-10', 'experiment_type': 'g2_heralded_virtual', 'save_dir': 'C:\\Users\\QUANTUM\\OneDrive - ENSTA\\!Working files\\HBT\\HBT Data\\Tests_Jun\\2026-06-12_17-24-10_g2_heralded_virtual', 'material': 'CdTe110', 'laser': {'rep_rate_hz': 18880000.0, 'wavelength_nm': 2100}, 'timetagging': {'tt_mode': 'Standard', 'binwidth_ps': 100, 'num_bins': 50000, 'channels': [1, 2, 3, 4, 5, 6], 'mode_on_channel': ['H3T', 'H3R', 'H4T', 'H4R', 'H5T', 'H5R'], 'deadtime': [0, 0, 0, 0, 0, 0], 'delays': [0, -1000, 20000, 16500, 17800, 17300], 'coincidence_window': 25000, 'trigger': [], 'filter': []}, 'custom': {}}
+2026-06-12 17:24:10,988 [INFO]  Found 0 connected Time Tagger(s)
+2026-06-12 17:24:11,033 [INFO]  Time Tagger initialized.
+2026-06-12 17:24:11,034 [INFO]  Stage Position: 292
+2026-06-12 17:24:11,035 [INFO]  Starting chunked acquisition (max 100 chunks / 100.0 min)
+2026-06-12 17:24:11,035 [INFO]  Chunk duration: 1 min
+2026-06-12 17:24:11,036 [INFO]  Threshold: 100000 counts, checking every 1 chunks
+2026-06-12 17:24:11,076 [INFO]  Found 0 connected Time Tagger(s)
+2026-06-12 17:24:11,141 [INFO]  Time Tagger initialized.
+2026-06-12 17:24:11,142 [INFO]  Chunk 1/100 | Elapsed: 1.0 min
+2026-06-12 17:24:11,143 [INFO]  Initializing experiment on Time Tagger.
+2026-06-12 17:24:11,144 [INFO]  Deadtime for channel 1: 0 ps
+2026-06-12 17:24:11,145 [INFO]  Deadtime for channel 2: 0 ps
+2026-06-12 17:24:11,146 [INFO]  Deadtime for channel 3: 0 ps
+2026-06-12 17:24:11,146 [INFO]  Deadtime for channel 4: 0 ps
+2026-06-12 17:24:11,147 [INFO]  Deadtime for channel 5: 0 ps
+2026-06-12 17:24:11,148 [INFO]  Deadtime for channel 6: 0 ps
+2026-06-12 17:24:11,148 [INFO]  Delays on channels enabled.
+2026-06-12 17:24:11,149 [INFO]  Delay for channel 1: requested=0 ps, actual=0 ps
+2026-06-12 17:24:11,150 [INFO]  Delay for channel 2: requested=-1000 ps, actual=-1000 ps
+2026-06-12 17:24:11,151 [INFO]  Delay for channel 3: requested=20000 ps, actual=20000 ps
+2026-06-12 17:24:11,151 [INFO]  Delay for channel 4: requested=16500 ps, actual=16500 ps
+2026-06-12 17:24:11,152 [INFO]  Delay for channel 5: requested=17800 ps, actual=17800 ps
+2026-06-12 17:24:11,153 [INFO]  Delay for channel 6: requested=17300 ps, actual=17300 ps
+2026-06-12 17:24:11,153 [INFO]  Executing synchronized correlation measuerment.
+2026-06-12 17:24:11,154 [INFO]  Delays on channels enabled.
+2026-06-12 17:24:11,155 [INFO]  Delay for channel 1: requested=0 ps, actual=0 ps.
+2026-06-12 17:24:11,155 [INFO]  Delay for channel 2: requested=-1000 ps, actual=-1000 ps.
+2026-06-12 17:24:11,156 [INFO]  Delay for channel 3: requested=20000 ps, actual=20000 ps.
+2026-06-12 17:24:11,157 [INFO]  Delay for channel 4: requested=16500 ps, actual=16500 ps.
+2026-06-12 17:24:11,157 [INFO]  Delay for channel 5: requested=17800 ps, actual=17800 ps.
+2026-06-12 17:24:11,158 [INFO]  Delay for channel 6: requested=17300 ps, actual=17300 ps.
+2026-06-12 17:24:11,159 [INFO]  Initializing measurement with virtual mode channels for ALL heralding permutations.
+2026-06-12 17:24:11,160 [INFO]  Automatically generated modes from input: {'H3': [1, 2], 'H4': [3, 4], 'H5': [5, 6]}
+2026-06-12 17:24:11,160 [INFO]  Setting up virtual channels...
+2026-06-12 17:24:11,163 [INFO]  Measurement starting for 1.000min / 0.017h
+2026-06-12 17:25:11,241 [INFO]  Measurements finished.
+2026-06-12 17:25:11,243 [INFO]  Collecting measurement data...
+2026-06-12 17:25:11,275 [INFO]  Starting writing data to file.
+2026-06-12 17:25:11,322 [INFO]  Saved data.
+2026-06-12 17:25:11,374 [INFO]  Merging 1 chunks into running total...
+2026-06-12 17:25:11,375 [INFO]  ============================================================
+2026-06-12 17:25:11,375 [INFO]  STATUS REPORT | Duration: 1.00 min (0.017 h)
+2026-06-12 17:25:11,376 [INFO]  ============================================================
+2026-06-12 17:25:11,378 [INFO]  COUNTRATES (Physical):
+2026-06-12 17:25:11,379 [INFO]    Ch 1: 1.0 kHz (total: 60,681)
+2026-06-12 17:25:11,379 [INFO]    Ch 2: 3.1 kHz (total: 185,980)
+2026-06-12 17:25:11,380 [INFO]    Ch 3: 1.6 kHz (total: 96,512)
+2026-06-12 17:25:11,381 [INFO]    Ch 4: 2.0 kHz (total: 122,094)
+2026-06-12 17:25:11,382 [INFO]    Ch 5: 0.0 kHz (total: 2,365)
+2026-06-12 17:25:11,383 [INFO]    Ch 6: 0.0 kHz (total: 1,764)
+2026-06-12 17:25:11,384 [INFO]  COUNTRATES (Virtual):
+2026-06-12 17:25:11,384 [INFO]    H3: 4.1 kHz (total: 246,661)
+2026-06-12 17:25:11,385 [INFO]    H4: 3.6 kHz (total: 218,606)
+2026-06-12 17:25:11,385 [INFO]    H5: 0.1 kHz (total: 4,129)
+2026-06-12 17:25:11,386 [INFO]  ------------------------------------------------------------
+2026-06-12 17:25:11,387 [INFO]  COINCIDENCES (threshold: 100000)
+2026-06-12 17:25:11,387 [INFO]  ------------------------------------------------------------
+2026-06-12 17:25:11,388 [INFO]  Twofold (physical) (Reached Threshold):
+2026-06-12 17:25:11,388 [INFO]    (1,2): 8 X
+2026-06-12 17:25:11,389 [INFO]    (1,3): 6 X
+2026-06-12 17:25:11,389 [INFO]    (1,4): 13 X
+2026-06-12 17:25:11,390 [INFO]    (1,5): 0 X
+2026-06-12 17:25:11,391 [INFO]    (1,6): 0 X
+2026-06-12 17:25:11,391 [INFO]    (2,3): 18 X
+2026-06-12 17:25:11,392 [INFO]    (2,4): 14 X
+2026-06-12 17:25:11,392 [INFO]    (2,5): 1 X
+2026-06-12 17:25:11,393 [INFO]    (2,6): 0 X
+2026-06-12 17:25:11,394 [INFO]    (3,4): 11 X
+2026-06-12 17:25:11,394 [INFO]    (3,5): 0 X
+2026-06-12 17:25:11,395 [INFO]    (3,6): 0 X
+2026-06-12 17:25:11,395 [INFO]    (4,5): 0 X
+2026-06-12 17:25:11,396 [INFO]    (4,6): 0 X
+2026-06-12 17:25:11,397 [INFO]    (5,6): 0 X
+2026-06-12 17:25:11,397 [INFO]  ============================================================
+2026-06-12 17:25:11,398 [INFO]  >>> 15 combination(s) below threshold <<<
+2026-06-12 17:25:11,399 [INFO]  ============================================================
+2026-06-12 17:25:11,443 [INFO]  Updated merged data: C:\Users\QUANTUM\OneDrive - ENSTA\!Working files\HBT\HBT Data\Tests_Jun\2026-06-12_17-24-10_g2_heralded_virtual\MERGED\17-24-10_2026-06-12_40.7mW_num0_MERGED.pkl
+2026-06-12 17:25:11,482 [INFO]  Found 0 connected Time Tagger(s)
+2026-06-12 17:25:11,538 [INFO]  Time Tagger initialized.
+2026-06-12 17:25:11,539 [INFO]  Chunk 2/100 | Elapsed: 2.0 min
+2026-06-12 17:25:11,540 [INFO]  Initializing experiment on Time Tagger.
+2026-06-12 17:25:11,541 [INFO]  Deadtime for channel 1: 0 ps
+2026-06-12 17:25:11,542 [INFO]  Deadtime for channel 2: 0 ps
+2026-06-12 17:25:11,542 [INFO]  Deadtime for channel 3: 0 ps
+2026-06-12 17:25:11,543 [INFO]  Deadtime for channel 4: 0 ps
+2026-06-12 17:25:11,544 [INFO]  Deadtime for channel 5: 0 ps
+2026-06-12 17:25:11,545 [INFO]  Deadtime for channel 6: 0 ps
+2026-06-12 17:25:11,545 [INFO]  Delays on channels enabled.
+2026-06-12 17:25:11,546 [INFO]  Delay for channel 1: requested=0 ps, actual=0 ps
+2026-06-12 17:25:11,547 [INFO]  Delay for channel 2: requested=-1000 ps, actual=-1000 ps
+2026-06-12 17:25:11,547 [INFO]  Delay for channel 3: requested=20000 ps, actual=20000 ps
+2026-06-12 17:25:11,548 [INFO]  Delay for channel 4: requested=16500 ps, actual=16500 ps
+2026-06-12 17:25:11,548 [INFO]  Delay for channel 5: requested=17800 ps, actual=17800 ps
+2026-06-12 17:25:11,549 [INFO]  Delay for channel 6: requested=17300 ps, actual=17300 ps
+2026-06-12 17:25:11,550 [INFO]  Executing synchronized correlation measuerment.
+2026-06-12 17:25:11,551 [INFO]  Delays on channels enabled.
+2026-06-12 17:25:11,551 [INFO]  Delay for channel 1: requested=0 ps, actual=0 ps.
+2026-06-12 17:25:11,552 [INFO]  Delay for channel 2: requested=-1000 ps, actual=-1000 ps.
+2026-06-12 17:25:11,553 [INFO]  Delay for channel 3: requested=20000 ps, actual=20000 ps.
+2026-06-12 17:25:11,554 [INFO]  Delay for channel 4: requested=16500 ps, actual=16500 ps.
+2026-06-12 17:25:11,554 [INFO]  Delay for channel 5: requested=17800 ps, actual=17800 ps.
+2026-06-12 17:25:11,555 [INFO]  Delay for channel 6: requested=17300 ps, actual=17300 ps.
+2026-06-12 17:25:11,556 [INFO]  Initializing measurement with virtual mode channels for ALL heralding permutations.
+2026-06-12 17:25:11,556 [INFO]  Automatically generated modes from input: {'H3': [1, 2], 'H4': [3, 4], 'H5': [5, 6]}
+2026-06-12 17:25:11,557 [INFO]  Setting up virtual channels...
+2026-06-12 17:25:11,560 [INFO]  Measurement starting for 1.000min / 0.017h
+2026-06-12 17:26:11,632 [INFO]  Measurements finished.
+2026-06-12 17:26:11,633 [INFO]  Collecting measurement data...
+2026-06-12 17:26:11,659 [INFO]  Starting writing data to file.
+2026-06-12 17:26:11,709 [INFO]  Saved data.
+2026-06-12 17:26:11,768 [INFO]  Merging 1 chunks into running total...
+2026-06-12 17:26:11,855 [INFO]  ============================================================
+2026-06-12 17:26:11,857 [INFO]  STATUS REPORT | Duration: 2.00 min (0.033 h)
+2026-06-12 17:26:11,857 [INFO]  ============================================================
+2026-06-12 17:26:11,858 [INFO]  COUNTRATES (Physical):
+2026-06-12 17:26:11,859 [INFO]    Ch 1: 1.0 kHz (total: 121,149)
+2026-06-12 17:26:11,859 [INFO]    Ch 2: 3.0 kHz (total: 362,806)
+2026-06-12 17:26:11,860 [INFO]    Ch 3: 1.6 kHz (total: 194,087)
+2026-06-12 17:26:11,861 [INFO]    Ch 4: 2.1 kHz (total: 246,197)
+2026-06-12 17:26:11,862 [INFO]    Ch 5: 0.0 kHz (total: 4,917)
+2026-06-12 17:26:11,863 [INFO]    Ch 6: 0.0 kHz (total: 3,648)
+2026-06-12 17:26:11,863 [INFO]  COUNTRATES (Virtual):
+2026-06-12 17:26:11,864 [INFO]    H3: 4.0 kHz (total: 483,955)
+2026-06-12 17:26:11,864 [INFO]    H4: 3.7 kHz (total: 440,284)
+2026-06-12 17:26:11,865 [INFO]    H5: 0.1 kHz (total: 8,565)
+2026-06-12 17:26:11,865 [INFO]  ------------------------------------------------------------
+2026-06-12 17:26:11,866 [INFO]  COINCIDENCES (threshold: 100000)
+2026-06-12 17:26:11,866 [INFO]  ------------------------------------------------------------
+2026-06-12 17:26:11,867 [INFO]  Twofold (physical) (Reached Threshold):
+2026-06-12 17:26:11,868 [INFO]    (1,2): 15 X
+2026-06-12 17:26:11,869 [INFO]    (1,3): 9 X
+2026-06-12 17:26:11,869 [INFO]    (1,4): 16 X
+2026-06-12 17:26:11,870 [INFO]    (1,5): 0 X
+2026-06-12 17:26:11,871 [INFO]    (1,6): 0 X
+2026-06-12 17:26:11,872 [INFO]    (2,3): 34 X
+2026-06-12 17:26:11,872 [INFO]    (2,4): 32 X
+2026-06-12 17:26:11,873 [INFO]    (2,5): 1 X
+2026-06-12 17:26:11,873 [INFO]    (2,6): 0 X
+2026-06-12 17:26:11,874 [INFO]    (3,4): 18 X
+2026-06-12 17:26:11,875 [INFO]    (3,5): 1 X
+2026-06-12 17:26:11,875 [INFO]    (3,6): 0 X
+2026-06-12 17:26:11,876 [INFO]    (4,5): 1 X
+2026-06-12 17:26:11,877 [INFO]    (4,6): 0 X
+2026-06-12 17:26:11,877 [INFO]    (5,6): 0 X
+2026-06-12 17:26:11,878 [INFO]  ============================================================
+2026-06-12 17:26:11,878 [INFO]  >>> 15 combination(s) below threshold <<<
+2026-06-12 17:26:11,878 [INFO]  ============================================================
+2026-06-12 17:26:11,923 [INFO]  Updated merged data: C:\Users\QUANTUM\OneDrive - ENSTA\!Working files\HBT\HBT Data\Tests_Jun\2026-06-12_17-24-10_g2_heralded_virtual\MERGED\17-24-10_2026-06-12_40.7mW_num0_MERGED.pkl
+2026-06-12 17:26:11,961 [INFO]  Found 0 connected Time Tagger(s)
+2026-06-12 17:26:12,003 [INFO]  Time Tagger initialized.
+2026-06-12 17:26:12,004 [INFO]  Chunk 3/100 | Elapsed: 3.0 min
+2026-06-12 17:26:12,005 [INFO]  Initializing experiment on Time Tagger.
+2026-06-12 17:26:12,006 [INFO]  Deadtime for channel 1: 0 ps
+2026-06-12 17:26:12,007 [INFO]  Deadtime for channel 2: 0 ps
+2026-06-12 17:26:12,008 [INFO]  Deadtime for channel 3: 0 ps
+2026-06-12 17:26:12,008 [INFO]  Deadtime for channel 4: 0 ps
+2026-06-12 17:26:12,009 [INFO]  Deadtime for channel 5: 0 ps
+2026-06-12 17:26:12,010 [INFO]  Deadtime for channel 6: 0 ps
+2026-06-12 17:26:12,010 [INFO]  Delays on channels enabled.
+2026-06-12 17:26:12,012 [INFO]  Delay for channel 1: requested=0 ps, actual=0 ps
+2026-06-12 17:26:12,012 [INFO]  Delay for channel 2: requested=-1000 ps, actual=-1000 ps
+2026-06-12 17:26:12,013 [INFO]  Delay for channel 3: requested=20000 ps, actual=20000 ps
+2026-06-12 17:26:12,014 [INFO]  Delay for channel 4: requested=16500 ps, actual=16500 ps
+2026-06-12 17:26:12,015 [INFO]  Delay for channel 5: requested=17800 ps, actual=17800 ps
+2026-06-12 17:26:12,015 [INFO]  Delay for channel 6: requested=17300 ps, actual=17300 ps
+2026-06-12 17:26:12,016 [INFO]  Executing synchronized correlation measuerment.
+2026-06-12 17:26:12,016 [INFO]  Delays on channels enabled.
+2026-06-12 17:26:12,017 [INFO]  Delay for channel 1: requested=0 ps, actual=0 ps.
+2026-06-12 17:26:12,018 [INFO]  Delay for channel 2: requested=-1000 ps, actual=-1000 ps.
+2026-06-12 17:26:12,018 [INFO]  Delay for channel 3: requested=20000 ps, actual=20000 ps.
+2026-06-12 17:26:12,019 [INFO]  Delay for channel 4: requested=16500 ps, actual=16500 ps.
+2026-06-12 17:26:12,020 [INFO]  Delay for channel 5: requested=17800 ps, actual=17800 ps.
+2026-06-12 17:26:12,020 [INFO]  Delay for channel 6: requested=17300 ps, actual=17300 ps.
+2026-06-12 17:26:12,021 [INFO]  Initializing measurement with virtual mode channels for ALL heralding permutations.
+2026-06-12 17:26:12,022 [INFO]  Automatically generated modes from input: {'H3': [1, 2], 'H4': [3, 4], 'H5': [5, 6]}
+2026-06-12 17:26:12,022 [INFO]  Setting up virtual channels...
+2026-06-12 17:26:12,025 [INFO]  Measurement starting for 1.000min / 0.017h
