@@ -200,6 +200,31 @@ class TimeTaggerDevice:
         self.log.info("Test signal %s on channels %s",
                       "enabled" if enabled else "disabled", list(channels))
 
+    def get_trigger_levels(self, channels: Sequence[int]) -> Sequence[float]:
+        """Get the trigger level (V) for the given channels."""
+        tagger = self._require()
+        return [tagger.getTriggerLevel(ch) for ch in channels]
+
+    def get_dead_times(self, channels: Sequence[int]) -> Sequence[float]:
+        """Get the dead time (ps) for the given channels."""
+        tagger = self._require()
+        return [tagger.getDeadtime(ch) for ch in channels]
+
+    def get_input_delays(self, channels: Sequence[int]) -> Sequence[float]:
+        """Get the input delay (ps) for the given channels."""
+        tagger = self._require()
+        return [tagger.getInputDelay(ch) for ch in channels]
+
+    def get_conditional_filter(self, trigger: Sequence[int], filtered: Sequence[int]) -> bool:
+        """Get the conditional filter (keep ``filtered`` tags only when preceded by a ``trigger`` tag)."""
+        tagger = self._require()
+        return tagger.getConditionalFilter(trigger=list(trigger), filtered=list(filtered))
+
+    def get_test_signal(self, channels: Sequence[int]) -> bool:
+        """Get the test signal (True/False) for the given channels."""
+        tagger = self._require()
+        return [tagger.getTestSignal(ch) for ch in channels]
+
 
 
     # ----------------------- simple probes -----------------------
