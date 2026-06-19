@@ -346,7 +346,11 @@ class RotationStage(ABC):
 class PRM1Stage(RotationStage):
     """Thorlabs PRM1/MZ8 rotation mount on a K-Cube DC servo, via Kinesis .NET.
 
-    Requires ``pythonnet`` and the Thorlabs Kinesis DLLs (installed system-wide under ``C:\\Program Files\\Thorlabs\\Kinesis`` or pointed to by the ``KINESIS_DLL_PATH`` environment variable). Identified by a string serial.
+    Requires ``pythonnet`` and the Thorlabs Kinesis DLLs 
+    (installed system-wide under 
+    ``C:\\Program Files\\Thorlabs\\Kinesis`` 
+    or pointed to by the ``KINESIS_DLL_PATH`` environment variable). 
+    Identified by a string serial.
     """
 
     _DEVICE_SETTINGS_NAME = "PRMTZ8"
@@ -361,7 +365,7 @@ class PRM1Stage(RotationStage):
     def _load_kinesis():
         """Import pythonnet and load the Kinesis assemblies; return the API tuple."""
         try:
-            import clr  # provided by pythonnet; bridges Python <-> .NET DLLs
+            import clr
         except ImportError as exc:
             raise RuntimeError(
                 "pythonnet is not installed. Run: pip install pythonnet"
@@ -372,107 +376,93 @@ class PRM1Stage(RotationStage):
                 "Run: pip uninstall clr"
             )
 
-        # Possible folders that contain the Thorlabs Kinesis DLLs.
         candidates = [
             os.environ.get("KINESIS_DLL_PATH"),    # user-provided override (may be None)
             r"C:\Program Files\Thorlabs\Kinesis",  # standard install location on Windows
         ]
-        # Pick the first candidate that exists and is a real directory.
         dll_path = next((p for p in candidates if p and os.path.isdir(p)), None)
         if dll_path is None:
             raise RuntimeError(
                 "Kinesis DLLs not found. Install Thorlabs Kinesis or set "
                 "KINESIS_DLL_PATH to the folder containing the DLLs."
             )
-        if dll_path not in sys.path:    # make the DLL folder importable...
-            sys.path.append(dll_path)   # ...by adding it to Python's search path
+        if dll_path not in sys.path:
+            sys.path.append(dll_path)
 
-        # Load the three .NET assemblies we need from the Kinesis SDK.
         clr.AddReference("Thorlabs.MotionControl.DeviceManagerCLI")
         clr.AddReference("Thorlabs.MotionControl.GenericMotorCLI")
         clr.AddReference("Thorlabs.MotionControl.KCube.DCServoCLI")
-        # Now import the specific classes/types from those assemblies.
         from Thorlabs.MotionControl.DeviceManagerCLI import DeviceManagerCLI
         from Thorlabs.MotionControl.KCube.DCServoCLI import KCubeDCServo
         from System import Decimal
-        return DeviceManagerCLI, KCubeDCServo, Decimal  # hand them back to the caller
+        return DeviceManagerCLI, KCubeDCServo, Decimal
 
     @staticmethod
     def list_available() -> list:
         """Return serials of connected PRM1-class stages (serials starting '27')."""
         try:
-            DeviceManagerCLI, _, _ = PRM1Stage._load_kinesis()  # only need the device manager
+            DeviceManagerCLI, _, _ = PRM1Stage._load_kinesis()
         except Exception as exc:  # noqa: BLE001
-            _LOG.warning("Cannot list PRM1 stages: %s", exc)    # no DLLs / no pythonnet
+            _LOG.warning("Cannot list PRM1 stages: %s", exc)
             return []
-        DeviceManagerCLI.BuildDeviceList()  # refresh the SDK's internal device list
-        # Keep only serials that start with "27" (the PRM1/K-Cube family).
+        DeviceManagerCLI.BuildDeviceList()
         return [str(sn) for sn in DeviceManagerCLI.GetDeviceList()
                 if str(sn).startswith("27")]
 
     def connect(self) -> "PRM1Stage":
-        DeviceManagerCLI, KCubeDCServo, Decimal = self._load_kinesis()  # load the .NET API
-        self._Decimal = Decimal  # remember Decimal so move_to can convert angles later
+        DeviceManagerCLI, KCubeDCServo, Decimal = self._load_kinesis()
+        self._Decimal = Decimal
 
-        DeviceManagerCLI.BuildDeviceList()                       # refresh device list
-        device = KCubeDCServo.CreateKCubeDCServo(self.stage_id)  # create the controller object
+        DeviceManagerCLI.BuildDeviceList()
+        device = KCubeDCServo.CreateKCubeDCServo(self.stage_id)
         if device is None:
             raise RuntimeError(f"Failed to create PRM1 device object for {self.stage_id}")
 
-        device.Connect(self.stage_id)            # open the USB connection
-        time.sleep(0.125)                        # tiny pause for the hardware to settle
-        device.StartPolling(250)                 # poll device status every 250 ms
+        device.Connect(self.stage_id)
         time.sleep(0.125)
-        device.EnableDevice()                    # energise the motor
+        device.StartPolling(250)
         time.sleep(0.125)
-        device.WaitForSettingsInitialized(10000)  # wait (<=10 s) for settings to load
+        device.EnableDevice()
+        time.sleep(0.125)
+        device.WaitForSettingsInitialized(10000)
 
-        m_config = device.LoadMotorConfiguration(self.stage_id)  # load motor config
-        m_config.DeviceSettingsName = self._DEVICE_SETTINGS_NAME  # set the mount profile
-        m_config.UpdateCurrentConfiguration()                     # apply it
-        device.SetSettings(device.MotorDeviceSettings, True, False)  # push settings to device
-
-        self._device = device       # store the live device object
-        self._connected = True      # mark as connected
+        self._device = device
+        self._connected = True
         self.log.info("Connected to PRM1 stage %s", self.stage_id)
         return self
 
     def _move_to_impl(self, angle: float, extra_delay_s: float):
-        # MoveTo needs a .NET Decimal; convert and give it the move timeout.
         self._device.MoveTo(self._Decimal(float(angle)), self._MOVE_TIMEOUT_MS)
-        while self._device.Status.IsInMotion:  # keep checking until the motor stops
-            time.sleep(0.05)                    # poll every 50 ms (don't busy-spin)
-        if extra_delay_s > 0:                   # optional extra settle time
+        while self._device.Status.IsInMotion:
+            time.sleep(0.05)
+        if extra_delay_s > 0:
             time.sleep(extra_delay_s)
 
     def position(self) -> Optional[float]:
-        if not self._connected:        # if not connected, there is no position to read
+        if not self._connected:
             return None
-        # Position is a .NET Decimal; str() then float() converts it to a Python float.
         return float(str(self._device.Position))
 
     def home(self):
         if not self._connected:
             return
         self.log.info("Homing PRM1 stage %s ...", self.stage_id)
-        self._device.Home(self._MOVE_TIMEOUT_MS)  # send to the mechanical reference point
-        while self._device.Status.IsInMotion:     # wait until homing finishes
+        self._device.Home(self._MOVE_TIMEOUT_MS)
+        while self._device.Status.IsInMotion:
             time.sleep(0.1)
 
     def disconnect(self):
-        if self._device is not None:               # only if we have a device to release
+        if self._device is not None:
             try:
-                self._device.StopPolling()         # stop the status polling thread
-                self._device.Disconnect()          # close the USB connection
+                self._device.StopPolling()
+                self._device.Disconnect()
             except Exception as exc:  # noqa: BLE001
-                # Never let a cleanup error crash the program; just warn.
                 self.log.warning("Error disconnecting PRM1 %s: %s", self.stage_id, exc)
-        self._device = None        # drop the reference
-        self._connected = False    # mark disconnected
+        self._device = None
+        self._connected = False
         self.log.info("Disconnected PRM1 stage %s", self.stage_id)
 
 
-# ELL14Stage IS-A RotationStage too, but uses a totally different vendor library.
 class ELL14Stage(RotationStage):
     """Thorlabs ELL14 resonant piezo rotation mount via the ``elliptec`` library.
 
@@ -480,68 +470,61 @@ class ELL14Stage(RotationStage):
     reuses) the controller and binds to a single integer bus address ``0..9``.
     """
 
-    # These are CLASS variables (shared by every ELL14Stage), because all ELL14
-    # stages on one bus talk through a single serial controller.
-    _controller = None                         # the shared elliptec.Controller (or None)
-    _controller_port: Optional[str] = None     # which COM port the controller uses
+    _controller = None
+    _controller_port: Optional[str] = None
 
     def __init__(self, address: int, port: Optional[str] = None,
                  logger: Optional[logging.Logger] = None):
-        super().__init__(address, logger)  # RotationStage.__init__ stores the address as id
-        self.port = port                   # optional explicit COM port for the controller
-        self._rotator = None               # the per-address elliptec.Rotator (once connected)
+        super().__init__(address, logger)
+        self.port = port
+        self._rotator = None
 
     @staticmethod
     def _load_elliptec():
-        import elliptec                              # the ELL14 control library
-        import serial.tools.list_ports as list_ports  # pyserial helper to list COM ports
+        import elliptec
+        import serial.tools.list_ports as list_ports
         return elliptec, list_ports
 
-    # `@classmethod` receives the class itself as `cls`; used here to touch the
-    # shared class-level controller variables.
     @classmethod
     def _find_port(cls, list_ports) -> Optional[str]:
-        # Collect COM ports whose description mentions a USB serial port.
         usb = [p.device for p in list_ports.comports()
                if "USB Serial Port" in (p.description or "")]
         if not usb:
             raise IOError("No USB Serial Port found for ELL14; check cables/drivers.")
-        if len(usb) == 1:     # exactly one candidate -> use it automatically
+        if len(usb) == 1:
             return usb[0]
-        # With several ports we cannot blindly guess; ask the caller to specify.
         raise IOError(f"Multiple USB serial ports {usb}; pass an explicit `port`.")
 
     @classmethod
     def _ensure_controller(cls, port: Optional[str]):
         elliptec, list_ports = cls._load_elliptec()
-        if cls._controller is not None:   # already connected once -> reuse it
+        if cls._controller is not None:
             return cls._controller
-        port = port or cls._find_port(list_ports)  # use given port or auto-detect one
-        cls._controller = elliptec.Controller(port)  # open the shared serial controller
-        cls._controller_port = port                   # remember which port it is on
+        port = port or cls._find_port(list_ports)
+        cls._controller = elliptec.Controller(port)
+        cls._controller_port = port
         _LOG.info("Connected to ELL14 controller on %s", port)
         return cls._controller
 
     def connect(self) -> "ELL14Stage":
         elliptec, _ = self._load_elliptec()
-        controller = self._ensure_controller(self.port)  # get/create the shared controller
-        # Bind a Rotator object to this specific bus address on that controller.
+        controller = self._ensure_controller(self.port)
         self._rotator = elliptec.Rotator(controller, address=str(self.stage_id))
         self._connected = True
         self.log.info("Connected to ELL14 stage at address %s", self.stage_id)
         return self
 
     def _move_to_impl(self, angle: float, extra_delay_s: float):
-        with _suppress_stdout():            # hide the library's noisy prints
-            self._rotator.set_angle(angle)  # command the rotation
-        if extra_delay_s > 0:               # optional settle time
+        with _suppress_stdout():
+            self._rotator.set_angle(angle)
+        if extra_delay_s > 0:
             time.sleep(extra_delay_s)
 
     def position(self) -> Optional[float]:
         if not self._connected:
             return None
         try:
-            return float(self._rotator.get_angle())  # ask the rotator for its angle
+            return float(self._rotator.get_angle())
         except Exception as exc:  # noqa: BLE001
             self.log.warning("Could not read ELL14 %s position: %s", self.stage_id, exc)
             return None
@@ -550,11 +533,9 @@ class ELL14Stage(RotationStage):
         if not self._connected:
             return
         self.log.info("Homing ELL14 address %s ...", self.stage_id)
-        self._rotator.home()  # send this rotator to its reference position
+        self._rotator.home()
 
     def disconnect(self):
-        # Individual ELL14 stages just drop their reference; the shared
-        # controller is closed by RotationStageController.disconnect_all().
         self._rotator = None
         self._connected = False
         self.log.info("Disconnected ELL14 address %s", self.stage_id)
@@ -566,16 +547,15 @@ class ELL14Stage(RotationStage):
         if ctrl is None:   # nothing to close
             return
         try:
-            # Different elliptec versions expose the serial port differently; try both.
-            port = getattr(ctrl, "_port", None)            # newer: a `_port` attribute
+            port = getattr(ctrl, "_port", None)
             if port is not None and hasattr(port, "close"):
                 port.close()
-            elif hasattr(ctrl, "close"):                   # older: a `close()` method
+            elif hasattr(ctrl, "close"):
                 ctrl.close()
         except Exception as exc:  # noqa: BLE001
             _LOG.warning("Error closing ELL14 controller: %s", exc)
         finally:
-            cls._controller = None        # always clear the shared references
+            cls._controller = None
             cls._controller_port = None
 
 
@@ -596,17 +576,14 @@ class RotationStageController:
     def __init__(self, stage_ids: Optional[Sequence[StageID]] = None,
                  logger: Optional[logging.Logger] = None):
         self.log = logger or _LOG
-        # Maps each stage ID to its connected RotationStage object.
         self.stages: dict[StageID, RotationStage] = {}
-        # The IDs we were asked to connect (copied into a list; [] if None given).
         self._requested = list(stage_ids) if stage_ids else []
 
     @staticmethod
     def _make_stage(stage_id: StageID, logger) -> RotationStage:
-        # Factory: choose the right concrete class based on the ID's type.
-        if isinstance(stage_id, str):                       # string -> PRM1 serial
+        if isinstance(stage_id, str):
             return PRM1Stage(stage_id, logger=logger)
-        if isinstance(stage_id, int) and 0 <= stage_id <= 9:  # int 0..9 -> ELL14 address
+        if isinstance(stage_id, int) and 0 <= stage_id <= 9:
             return ELL14Stage(stage_id, logger=logger)
         raise ValueError(f"Unrecognised stage id {stage_id!r} "
                          "(str -> PRM1 serial, int 0-9 -> ELL14 address).")
@@ -615,10 +592,10 @@ class RotationStageController:
         """Connect to every requested stage (errors are logged, not fatal)."""
         for stage_id in self._requested:
             try:
-                stage = self._make_stage(stage_id, self.log)  # build the right stage object
-                stage.connect()                               # open it
-                self.stages[stage_id] = stage                 # remember it on success
-            except Exception as exc:  # noqa: BLE001
+                stage = self._make_stage(stage_id, self.log)
+                stage.connect()
+                self.stages[stage_id] = stage
+            except Exception as exc:
                 # One bad stage should not stop the others from connecting.
                 self.log.error("Could not connect stage %s: %s", stage_id, exc)
         self.log.info("Connected %d/%d rotation stage(s).",
@@ -626,44 +603,42 @@ class RotationStageController:
         return self
 
     def _resolve(self, stage_id: Optional[StageID]) -> RotationStage:
-        # Turn an (optional) ID into a concrete connected stage, with helpful errors.
         if not self.stages:
             raise RuntimeError("No rotation stages connected.")
-        if stage_id is None:                       # caller didn't say which stage
-            if len(self.stages) > 1:               # ambiguous if more than one
+        if stage_id is None:
+            if len(self.stages) > 1:
                 self.log.warning("Multiple stages connected; using first one.")
-            return next(iter(self.stages.values()))  # just take the first connected stage
+            return next(iter(self.stages.values()))
         if stage_id not in self.stages:
             raise KeyError(f"Stage {stage_id!r} is not connected.")
         return self.stages[stage_id]
 
     def move_to(self, angle: float, stage_id: Optional[StageID] = None,
                 extra_delay_s: float = 0.1):
-        # Find the requested stage and delegate the move to it.
         self._resolve(stage_id).move_to(angle, extra_delay_s)
 
     def position(self, stage_id: Optional[StageID] = None):
-        if stage_id is None:  # no ID -> return a dict of every stage's position
+        if stage_id is None:
             return {sid: s.position() for sid, s in self.stages.items()}
         return self._resolve(stage_id).position()  # otherwise just the one stage
 
     def home(self, stage_id: Optional[StageID] = None):
-        if stage_id is None:           # no ID -> home all stages
+        if stage_id is None:
             for s in self.stages.values():
                 s.home()
         else:
-            self._resolve(stage_id).home()  # otherwise home the one requested
+            self._resolve(stage_id).home()
 
     def disconnect_all(self):
-        for stage in self.stages.values():  # disconnect each individual stage
+        for stage in self.stages.values():
             stage.disconnect()
-        ELL14Stage.close_controller()       # then close the shared ELL14 serial controller
-        self.stages.clear()                 # forget all stages
+        ELL14Stage.close_controller()
+        self.stages.clear()
         self.log.info("All rotation stages disconnected.")
 
     def __enter__(self) -> "RotationStageController":
-        return self.connect()  # `with RotationStageController(...) as stages:` connects
+        return self.connect()
 
     def __exit__(self, exc_type, exc, tb):
-        self.disconnect_all()  # ...and always disconnects on exit
+        self.disconnect_all()
         return False
