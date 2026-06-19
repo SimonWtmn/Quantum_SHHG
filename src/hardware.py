@@ -360,7 +360,17 @@ class PRM1Stage(RotationStage):
     @staticmethod
     def _load_kinesis():
         """Import pythonnet and load the Kinesis assemblies; return the API tuple."""
-        import clr  # provided by pythonnet; bridges Python <-> .NET DLLs
+        try:
+            import clr  # provided by pythonnet; bridges Python <-> .NET DLLs
+        except ImportError as exc:
+            raise RuntimeError(
+                "pythonnet is not installed. Run: pip install pythonnet"
+            ) from exc
+        if not hasattr(clr, "AddReference"):
+            raise RuntimeError(
+                "Wrong 'clr' package is installed (conflicts with pythonnet). "
+                "Run: pip uninstall clr"
+            )
 
         # Possible folders that contain the Thorlabs Kinesis DLLs.
         candidates = [
