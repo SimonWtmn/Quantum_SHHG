@@ -28,6 +28,7 @@ folder/logging convention with the rest of ``src/`` (``hbt_core``,
 
 Author: Simon WITTMANN
 Institution: Laboratoire d'Optique Appliquee (LOA), Ecole Polytechnique
+Date: 19/06/2026
 """
 
 # Lets type hints reference a class from inside its own body (e.g. -> "Acquisition").
