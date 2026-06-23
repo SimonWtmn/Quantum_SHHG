@@ -35,7 +35,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 plt.rcParams.update({
-    "text.usetex": True,
+    "text.usetex": False,
     "font.family": "serif",
     "font.size": 13,
     "figure.titlesize": 18,

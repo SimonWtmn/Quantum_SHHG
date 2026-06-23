@@ -32,7 +32,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 plt.rcParams.update({
-    "text.usetex": True,
+    "text.usetex": False,
     "font.family": "serif",
     "font.size": 12,
     "figure.titlesize": 18,
