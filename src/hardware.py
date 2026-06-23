@@ -353,13 +353,20 @@ class PRM1Stage(RotationStage):
     Identified by a string serial.
     """
 
-    _DEVICE_SETTINGS_NAME = "PRMTZ8"
+    # Kinesis motor-configuration name; MUST match the actuator (shown in the
+    # Kinesis GUI as "Actuator: ..."). For the PRM1/Z8 rotation mount this is
+    # "PRM1-Z8"; the older T-Cube variant used "PRMTZ8". A wrong name loads the
+    # wrong real<->device unit calibration, so MoveTo will not rotate correctly.
+    _DEVICE_SETTINGS_NAME = "PRM1-Z8"
     _MOVE_TIMEOUT_MS = 60000
 
-    def __init__(self, serial: str, logger: Optional[logging.Logger] = None):
+    def __init__(self, serial: str, logger: Optional[logging.Logger] = None,
+                 device_settings_name: Optional[str] = None):
         super().__init__(serial, logger)  # run RotationStage.__init__ (sets id/log/_connected)
         self._device = None               # the Kinesis .NET device object (once connected)
         self._Decimal = None              # the .NET Decimal type (Kinesis wants Decimal angles)
+        if device_settings_name:
+            self._DEVICE_SETTINGS_NAME = device_settings_name
 
     @staticmethod
     def _load_kinesis():
