@@ -3,14 +3,31 @@
 HBT Power-Scan Analyzer
 =============================================================================
 
-Tools to study how the harmonics of a high-harmonic-generation source behave when the driving (pump) intensity I_0 is swept. 
-One acquisition file per power; this module turns that family of runs into the three diagnostic plots 
-used to test the intensity-fluctuation model of the harmonic photon statistics.
+Tools to study how the harmonics of a high-harmonic-generation source behave
+when the driving (pump) intensity ``I_0`` is swept. One full acquisition file per
+power; this module turns that family of runs into the diagnostic plots used to
+test the intensity-fluctuation model of the harmonic photon statistics:
+
+* ``g^(2)(0)`` vs power,
+* the rescaled *collapse* ``(g^(2)_n - 1)/K^2(n) -> g^(2)_0 - 1 = sigma^2``,
+* the intensity scaling ``<I_n> ~ I_0^{K(n)}`` (log-log), and
+* the effective nonlinearity ``K(n) = d ln<I_n>/d ln I_0``.
+
+The exponent ``K(n)`` is central to the whole model. By default it is the local
+log-log slope of the few power-scan points, but a *dense intensity scan* (many
+extra count-rate-only points taken by sweeping a half-wave-plate angle, see
+:class:`~src.measurement.CountrateRecorder`) can be supplied to compute a far
+smoother ``K(n)`` while the ``g^(2)`` plots still use only the selected powers.
+
+All plotting methods are **pure figure builders**: they create (or fill) the axes
+and return ``(fig, ax)`` without calling ``plt.show()`` so an orchestrator
+(:class:`src.report.PowerScanReport`) controls saving and interactive display.
 
 Author: Simon WITTMANN
 Institution: Laboratoire d'Optique Appliquee (LOA), Ecole Polytechnique
-Date: 15/06/2026
 """
+
+from __future__ import annotations
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -38,32 +55,60 @@ plt.rcParams.update({
 # two families never share a colour and stay readable even in greyscale.
 _AUTO_COLORS = ['#d62728', '#1f77b4', '#2ca02c', '#9467bd', '#8c564b', '#e377c2']
 _CROSS_COLORS = ['#ff7f0e', '#17becf', '#bcbd22', '#7f7f7f', '#1a9850', '#9e0142']
+_SCAN_COLORS = ['#1f77b4', '#d62728', '#2ca02c', '#9467bd', '#ff7f0e', '#17becf', '#8c564b']
 _IDEAL_GREY = '0.45'
+
+_INTERACTIVE_DPI = 110
+
+
+def malus_power(angle_deg, p_max, theta0_deg=0.0, offset=0.0):
+    """Pump power transmitted by a half-wave-plate + polariser at ``angle_deg``.
+
+    ``P(theta) = offset + p_max * cos^2(theta - theta0)`` (Malus' law). Used to turn
+    a dense rotation-stage angle scan into the equivalent pump powers that feed the
+    ``K(n)`` computation. ``angle_deg`` may be a scalar or an array.
+    """
+    a = np.deg2rad(np.asarray(angle_deg, dtype=float) - theta0_deg)
+    return offset + p_max * np.cos(a) ** 2
 
 
 class PowerScanAnalyzer:
-    """Analyse a power scan: one HBTMeasurement per pump power, same filter/polarisation.
+    """Analyse a power scan: one :class:`~src.core.HBTMeasurement` per pump power,
+    same filter / polarisation / sample.
 
     Parameters
     ----------
     runs : list[HBTMeasurement]
-        The runs of the scan (any order; runs without a known power are dropped).
+        The full runs of the scan (any order; runs without a known power are dropped).
     harmonics : tuple[int]
-        Harmonic orders to analyse (default (3, 4, 5)).
+        Harmonic orders to analyse (default ``(3, 4, 5)``).
     tau_in_ns : float
         Integration window for the delay g^(2) (the recommended method).
     g2_method : {'delay', 'direct', 'heralded'}
-        How g^(2)(0) is computed at each power. 'delay' (default) uses the physical histogram
-        when available.
+        How g^(2)(0) is computed at each power.
     g2_source : {'auto', 'physical', 'virtual'}
         Histogram source for the delay method.
     intensity : {'countrate', 'counts'}
         Observable used as the harmonic intensity <I_n> (default count rate, counts/s).
+    intensity_runs : list[HBTMeasurement], optional
+        A DENSE set of intensity-only runs (e.g. from
+        :class:`~src.measurement.CountrateRecorder`) used solely to compute a smooth
+        ``K(n)``. Their power is taken from ``power_mw`` if set, otherwise from the
+        rotation-stage angle via ``malus``.
+    malus : dict, optional
+        ``{'p_max': float, 'theta0': float, 'offset': float}`` mapping a dense run's
+        stage angle to pump power (see :func:`malus_power`). Required for dense runs
+        that only carry an angle.
+    k_poly_deg : int
+        Degree of the log-log polynomial fitted to the dense intensity curve before
+        differentiating to obtain ``K(n)`` (default 3).
     """
 
     def __init__(self, runs, harmonics=(3, 4, 5), tau_in_ns=4.0,
-                 g2_method='delay', g2_source='auto', intensity='countrate'):
-        self.runs = sorted([r for r in runs if r.power_mw is not None], key=lambda r: r.power_mw)
+                 g2_method='delay', g2_source='auto', intensity='countrate',
+                 intensity_runs=None, malus=None, k_poly_deg=3):
+        self.runs = sorted([r for r in runs if r.power_mw is not None],
+                           key=lambda r: r.power_mw)
         if len(self.runs) < 2:
             raise ValueError("A power scan needs at least two runs with a known power.")
         self.harmonics = tuple(harmonics)
@@ -71,13 +116,75 @@ class PowerScanAnalyzer:
         self.g2_method = g2_method
         self.g2_source = g2_source
         self.intensity = intensity
-        self.hcolor = {n: _AUTO_COLORS[i % len(_AUTO_COLORS)] for i, n in enumerate(self.harmonics)}
+        self.malus = malus
+        self.k_poly_deg = int(k_poly_deg)
+        self.intensity_runs = [r for r in (intensity_runs or [])
+                               if self._power_of(r) is not None]
+        self.has_dense = len(self.intensity_runs) >= max(2, k_poly_deg)
+        self.hcolor = {n: _AUTO_COLORS[i % len(_AUTO_COLORS)]
+                       for i, n in enumerate(self.harmonics)}
 
         self._build()
 
+    # ---------------- power / dense helpers ----------------
 
+    def _power_of(self, run):
+        """Pump power of a run: its ``power_mw`` if known, else Malus' law on the
+        rotation-stage angle (when a ``malus`` mapping was provided)."""
+        if run.power_mw is not None:
+            return float(run.power_mw)
+        if self.malus is not None and run.rotation_stage is not None:
+            return float(malus_power(run.rotation_stage,
+                                     self.malus.get('p_max', 1.0),
+                                     self.malus.get('theta0', 0.0),
+                                     self.malus.get('offset', 0.0)))
+        return None
 
+    @staticmethod
+    def _logfit_deriv(x, y, deg):
+        """Derivative coefficients of a degree-``deg`` polynomial fitted to (x, y),
+        plus the sorted, finite x used. Returns (None, None) if too few points."""
+        x, y = np.asarray(x, float), np.asarray(y, float)
+        good = np.isfinite(x) & np.isfinite(y)
+        x, y = x[good], y[good]
+        order = np.argsort(x)
+        x, y = x[order], y[order]
+        # collapse duplicate x (same power sampled twice) by averaging y
+        if len(x) > 1:
+            ux, inv = np.unique(x, return_inverse=True)
+            if len(ux) != len(x):
+                uy = np.array([y[inv == i].mean() for i in range(len(ux))])
+                x, y = ux, uy
+        d = min(int(deg), len(x) - 1)
+        if d < 1:
+            return None, x
+        coef = np.polyfit(x, y, d)
+        return np.polyder(coef), x
 
+    def local_exponent_at(self, n, powers):
+        """K(n) = d ln<I_n>/d ln I_0 evaluated at the given ``powers``.
+
+        Uses the dense intensity scan (smooth poly slope) when available, otherwise
+        the local gradient of the discrete power-scan points.
+        """
+        powers = np.atleast_1d(np.asarray(powers, float))
+        if self.has_dense:
+            dcoef, _ = self._logfit_deriv(np.log(self.P_dense),
+                                          np.log(self.In_dense[n]), self.k_poly_deg)
+            if dcoef is not None:
+                return np.polyval(dcoef, np.log(powers))
+        # discrete fallback: only valid at the scan powers themselves
+        with np.errstate(divide='ignore', invalid='ignore'):
+            k = np.gradient(np.log(self.In[n]), np.log(self.I0))
+        return np.interp(np.log(powers), np.log(self.I0), k)
+
+    def exponent_curve(self, n, num=200):
+        """A smooth (P, K(n)) curve over the dense power range (dense scan only)."""
+        if not self.has_dense:
+            return self.I0, self.K[n]
+        lo, hi = np.log(self.P_dense.min()), np.log(self.P_dense.max())
+        P = np.exp(np.linspace(lo, hi, num))
+        return P, self.local_exponent_at(n, P)
 
     # ---------------- data assembly ----------------
 
@@ -89,22 +196,41 @@ class PowerScanAnalyzer:
             return run.compute_g2_heralded(c1, c2, self.tau_in_ns)
         return run.compute_g2_delay(c1, c2, self.tau_in_ns, source=self.g2_source)
 
-
     def _build(self):
         self.I0 = np.array([r.pump_intensity() for r in self.runs], dtype=float)
-        log_I0 = np.log(self.I0)
+
+        # Dense intensity scan (for K(n)) — assembled first so the exponents can use it.
+        if self.has_dense:
+            pts = sorted(((self._power_of(r), r) for r in self.intensity_runs),
+                         key=lambda t: t[0])
+            self.P_dense = np.array([p for p, _ in pts], dtype=float)
+            self.In_dense = {n: np.array([r.harmonic_intensity(n, self.intensity)
+                                          for _, r in pts], dtype=float)
+                             for n in self.harmonics}
+            self.In_ch_dense = {}
+            for n in self.harmonics:
+                for arm in ('T', 'R'):
+                    name = f"H{n}{arm}"
+                    try:
+                        self.In_ch_dense[name] = np.array(
+                            [r.channel_intensity(r.get_ch(name), self.intensity)
+                             for _, r in pts], dtype=float)
+                    except KeyError:
+                        pass
+        else:
+            self.P_dense, self.In_dense, self.In_ch_dense = None, {}, {}
 
         self.In, self.K, self.g2_auto = {}, {}, {}
         for n in self.harmonics:
-            In = np.array([r.harmonic_intensity(n, self.intensity) for r in self.runs], dtype=float)
-            self.In[n] = In
-            with np.errstate(divide='ignore', invalid='ignore'):
-                self.K[n] = np.gradient(np.log(In), log_I0)
+            self.In[n] = np.array([r.harmonic_intensity(n, self.intensity)
+                                   for r in self.runs], dtype=float)
             self.g2_auto[n] = np.array(
                 [self._g2_pair(r, f"H{n}T", f"H{n}R") for r in self.runs], dtype=float)
+        for n in self.harmonics:
+            self.K[n] = self.local_exponent_at(n, self.I0)
 
-        # Per-detector (physical channel) intensities, so the scaling can be shown arm-by-arm
-        # (H3T, H3R, H4T, ...) and not only as the merged harmonic Hn.
+        # Per-detector (physical channel) intensities, so the scaling can be shown
+        # arm-by-arm (H3T, H3R, H4T, ...) and not only as the merged harmonic Hn.
         self.In_ch, self.chan_names, self.chcolor = {}, [], {}
         for hi, n in enumerate(self.harmonics):
             for arm in ('T', 'R'):
@@ -120,7 +246,6 @@ class PowerScanAnalyzer:
                 if ok:
                     self.In_ch[name] = np.array(vals, dtype=float)
                     self.chan_names.append(name)
-                    # T arm shares the harmonic's auto colour; R arm uses the cross palette.
                     palette = _AUTO_COLORS if arm == 'T' else _CROSS_COLORS
                     self.chcolor[name] = palette[hi % len(palette)]
 
@@ -134,7 +259,6 @@ class PowerScanAnalyzer:
 
         self.header = self._build_header()
 
-
     def _build_header(self):
         r0 = self.runs[0]
         bits = []
@@ -147,11 +271,10 @@ class PowerScanAnalyzer:
         if r0.polarization:
             bits.append(r0.polarization)
         bits.append(rf"$P = {self.I0.min():g}$--${self.I0.max():g}$ mW ({len(self.I0)} pts)")
+        if self.has_dense:
+            bits.append(rf"$K(n)$: {len(self.P_dense)} dense pts")
         bits.append(rf"$g^{{(2)}}$: {self.g2_method} ($\tau_{{in}} = {self.tau_in_ns:g}$ ns)")
         return "  |  ".join(bits)
-
-
-
 
     # ---------------- numeric helpers ----------------
 
@@ -167,7 +290,6 @@ class PowerScanAnalyzer:
         slope, intercept = np.polyfit(x[:n_fit], y[:n_fit], 1)
         return slope, intercept
 
-
     @staticmethod
     def _line_sse(x, y):
         """Sum of squared residuals of a straight-line (log-log) fit; 0 for <2 points."""
@@ -176,11 +298,9 @@ class PowerScanAnalyzer:
         slope, intercept = np.polyfit(x, y, 1)
         return float(np.sum((y - (slope * x + intercept)) ** 2))
 
-
     def _auto_breakpoint(self, x, y, min_pts=2):
         """Index `b` splitting (x, y) into a low-power segment [:b] and a high-power
-        (saturation) segment [b:] so that the combined two-line residual is minimal.
-        Requires at least `min_pts` points on each side; returns None if impossible."""
+        (saturation) segment [b:] so that the combined two-line residual is minimal."""
         best_b, best_sse = None, np.inf
         for b in range(min_pts, len(x) - min_pts + 1):
             sse = self._line_sse(x[:b], y[:b]) + self._line_sse(x[b:], y[b:])
@@ -188,19 +308,9 @@ class PowerScanAnalyzer:
                 best_sse, best_b = sse, b
         return best_b
 
-
     def two_segment_fit(self, P, y, n_fit=None, split=None, min_pts=2):
-        """Two free-slope power-law fits of y vs P in log-log: a low-power *perturbative* branch
-        and a high-power *saturation* branch (each slope K is fitted, not imposed).
-
-        `split` chooses where the perturbative regime ends and saturation begins:
-          * None     -> auto-detected breakpoint (minimal combined residual); `n_fit`, if given,
-                        is used instead as the number of perturbative (low-power) points,
-          * int      -> fixed index (first point of the saturation branch).
-
-        Returns a dict with 'lo'/'hi' = (slope, intercept) (each None if absent), the breakpoint
-        index 'b', the saturation onset power 'P_sat', and the masked (P, y) actually used.
-        """
+        """Two free-slope power-law fits of y vs P in log-log: a low-power *perturbative*
+        branch and a high-power *saturation* branch (each slope K is fitted, not imposed)."""
         P, y = np.asarray(P, float), np.asarray(y, float)
         good = np.isfinite(P) & np.isfinite(y) & (y > 0)
         Pg, yg = P[good], y[good]
@@ -232,12 +342,10 @@ class PowerScanAnalyzer:
         out['hi'] = tuple(np.polyfit(lx[b:], ly[b:], 1))
         return out
 
-
     def collapse_auto(self, n, slope='local', n_fit=None):
         """(g2_nn - 1) / K^2(n) for harmonic n (should equal g2_0 - 1 for every harmonic)."""
         k = self.K[n] if slope == 'local' else self.perturbative_slope(n, n_fit)[0]
         return (self.g2_auto[n] - 1.0) / np.asarray(k) ** 2
-
 
     def collapse_cross(self, m, n, slope='local', n_fit=None):
         """(g2_mn - 1) / (K(m) K(n)) for a cross pair (should also equal g2_0 - 1)."""
@@ -247,12 +355,9 @@ class PowerScanAnalyzer:
             km, kn = self.perturbative_slope(m, n_fit)[0], self.perturbative_slope(n, n_fit)[0]
         return (self.g2_cross[(m, n)] - 1.0) / (np.asarray(km) * np.asarray(kn))
 
-
     def inferred_g2_0(self, slope='local', n_fit=None, harmonics=None, pairs=None):
-        """Indirect estimate of the pump excess g2_0 - 1 = sigma^2, as the mean (and std) over the
-        collapsed curves vs power. `harmonics`/`pairs` restrict which curves enter the average
-        (default: all); exclude cross pairs entirely with `pairs=[]`. Useful to drop a degenerate
-        harmonic (e.g. one with K~0, whose 1/K^2 collapse blows up). Returns NaN arrays if empty."""
+        """Indirect estimate of the pump excess g2_0 - 1 = sigma^2, as the mean (and std)
+        over the collapsed curves vs power."""
         keep_h, keep_p = self._resolve_keep(harmonics, pairs)
         stack = [self.collapse_auto(n, slope, n_fit) for n in self.harmonics if n in keep_h]
         stack += [self.collapse_cross(m, n, slope, n_fit) for (m, n) in self.g2_cross
@@ -262,7 +367,6 @@ class PowerScanAnalyzer:
             return nan, nan
         arr = np.vstack(stack)
         return np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
-
 
     def summary_table(self):
         """Print one row per power: I_0, <I_n>, K(n), g2_nn and the collapsed (g2-1)/K^2."""
@@ -281,25 +385,21 @@ class PowerScanAnalyzer:
             row += [f"{coll[n][i]:12.4f}" for n in h]
             print("".join(row))
 
-
-
-
     # ---------------- plots (each accepts an optional ax for composition) ----------------
 
     @staticmethod
     def _ax(ax, figsize=(9, 6.5)):
         if ax is None:
-            fig, ax = plt.subplots(figsize=figsize, dpi=300)
+            fig, ax = plt.subplots(figsize=figsize, dpi=_INTERACTIVE_DPI)
             return fig, ax, True
         return ax.figure, ax, False
-
 
     def _finish(self, fig, ax, own, title, handles=None, labels=None, legend_kw=None):
         """Title block + legend for a standalone figure (own=True).
 
-        The descriptive title sits on top (suptitle); the acquisition metadata is the smaller
-        grey sub-title placed just above the axes (so the order reads title -> metadata -> plot,
-        not the other way round). For composed panels (own=False) only the legend is drawn.
+        Pure builder: NEVER calls ``plt.show()`` — the orchestrator decides when to
+        display/save. The descriptive title sits on top (suptitle); the acquisition
+        metadata is the smaller grey sub-title just above the axes.
         """
         lk = dict(framealpha=0.92, edgecolor='0.7', fontsize=10)
         if legend_kw:
@@ -312,31 +412,17 @@ class PowerScanAnalyzer:
             fig.suptitle(title, fontsize=16, y=0.94)
             ax.set_title(self.header, fontsize=9.5, color='#555555', loc="center")
             fig.tight_layout()
-            plt.show()
         return fig, ax
-
 
     def plot_intensity_scaling(self, ax=None, n_fit=None, split=None, per_channel=True,
                                harmonics=None, channels=None, show_ideal=True,
                                xlim=None, ylim=None):
-        """Plot 3: intensity vs I_0 (log-log) with two fitted power laws per curve.
+        """Intensity vs I_0 (log-log) with fitted power laws per curve.
 
-        Markers = data, solid line = perturbative (low-power) fit, dashed line = saturation
-        (high-power) fit (both slopes K are fitted), and an open ring marks the breakpoint where
-        the scaling rolls over into saturation. Thin grey dots = the ideal slope K=n anchored on
-        the lowest-power point.
-
-        * per_channel=True (default): one curve per physical detector (H3T, H3R, H4T, ...).
-        * per_channel=False: one curve per merged harmonic (H3, H4, H5).
-
-        Toggle what is shown (handy when a cut produces no Hn, e.g. GaAs100 has no H4):
-          * `harmonics` -> iterable of orders to keep, e.g. (3, 5) (default: all),
-          * `channels`  -> explicit list of channel names to keep, e.g. ['H3T', 'H5R']
-                           (per-channel mode only; takes precedence over `harmonics`).
-
-        The breakpoint is auto-detected; override with `split` (int index, or a dict keyed by the
-        curve name / harmonic) or `n_fit` (number of perturbative points). `xlim`/`ylim` set the
-        axis ranges (each a (lo, hi) tuple); None keeps autoscale.
+        With a dense intensity scan the dense points and a smooth poly fit are drawn
+        (markers = the selected power-scan points), and the curve is annotated with
+        ``K`` from the lowest to the highest power. Without it, the two-segment
+        (perturbative -> saturation) fit on the scan points is used.
         """
         fig, ax, own = self._ax(ax)
         keep_h, _ = self._resolve_keep(harmonics, None)
@@ -349,13 +435,38 @@ class PowerScanAnalyzer:
             else:
                 series = [s for s in series if s[1] in keep_h]
             label_of = lambda name, n: rf"$H_{{{n}}}${name[len(str(n)) + 1:]}"
+            dense_of = lambda name: self.In_ch_dense.get(name)
         else:
             series = [(rf"H{n}", n, self.hcolor[n], self.In[n])
                       for n in self.harmonics if n in keep_h]
             label_of = lambda name, n: rf"$H_{{{n}}}$"
+            dense_of = lambda name: self.In_dense.get(int(name[1:]))
 
         any_sat = False
         for name, n, c, y in series:
+            yd = dense_of(name) if self.has_dense else None
+            if self.has_dense and yd is not None and np.isfinite(yd).sum() >= 2:
+                # dense scatter (light) + selected power-scan points (open rings)
+                ax.loglog(self.P_dense, yd, '.', color=c, ms=4, alpha=0.45)
+                ax.loglog(self.I0, y, 'o', color=c, ms=7, mfc='none', mew=1.8)
+                # smooth log-log poly fit and its slope at the range ends
+                lp, ly = np.log(self.P_dense), np.log(yd)
+                deg = max(1, min(self.k_poly_deg, len(self.P_dense) - 1))
+                pc = np.polyfit(lp, ly, deg)
+                xs = np.linspace(lp.min(), lp.max(), 200)
+                ax.loglog(np.exp(xs), np.exp(np.polyval(pc, xs)), '-', color=c, lw=2.0)
+                dpc = np.polyder(pc)
+                k_lo = float(np.polyval(dpc, lp.min()))
+                k_hi = float(np.polyval(dpc, lp.max()))
+                lab = label_of(name, n) + rf": $K={k_lo:.2f}\!\to\!{k_hi:.2f}$ (ideal {n})"
+                if show_ideal:
+                    i_min = int(np.argmin(self.P_dense))
+                    xf = np.array([self.P_dense.min(), self.P_dense.max()])
+                    ax.loglog(xf, yd[i_min] * (xf / self.P_dense[i_min]) ** n,
+                              ':', color=_IDEAL_GREY, lw=1.0)
+                ax.plot([], [], '-', color=c, label=lab)
+                continue
+
             sp = split.get(name, split.get(n)) if isinstance(split, dict) else split
             f = self.two_segment_fit(self.I0, y, n_fit=n_fit, split=sp)
             P, lo, hi, b = f['P'], f['lo'], f['hi'], f['b']
@@ -395,17 +506,24 @@ class PowerScanAnalyzer:
             h.append(Line2D([0], [0], color=_IDEAL_GREY, ls=':', lw=1.0))
             lab.append(r"ideal slope $K=n$")
         ncol = 2 if len(series) > 3 else 1
-        return self._finish(fig, ax, own, r"Harmonic intensity scaling $\langle I_n\rangle \sim I_0^{K(n)}$",
+        return self._finish(fig, ax, own,
+                            r"Harmonic intensity scaling $\langle I_n\rangle \sim I_0^{K(n)}$",
                             h, lab, legend_kw=dict(loc='lower right', ncol=ncol))
-
 
     def plot_local_slope(self, ax=None, xlim=None, ylim=None):
         """Local exponent K(n) = d ln<I_n>/d ln I_0 vs power; departs from n at saturation.
-        `xlim`/`ylim` set the axis ranges ((lo, hi) tuples); None keeps autoscale."""
+
+        With a dense intensity scan the smooth curve is drawn and the values sampled at
+        the actual power-scan points are marked."""
         fig, ax, own = self._ax(ax, figsize=(9, 6))
         for n in self.harmonics:
             c = self.hcolor[n]
-            ax.semilogx(self.I0, self.K[n], 'o-', color=c, ms=7, label=rf"$K({n})$ measured")
+            if self.has_dense:
+                Pc, Kc = self.exponent_curve(n)
+                ax.semilogx(Pc, Kc, '-', color=c, lw=2.0, label=rf"$K({n})$ (dense)")
+                ax.semilogx(self.I0, self.K[n], 'o', color=c, ms=7, mfc='white', mew=1.8)
+            else:
+                ax.semilogx(self.I0, self.K[n], 'o-', color=c, ms=7, label=rf"$K({n})$ measured")
             ax.axhline(n, color=c, ls=':', lw=1.4, alpha=0.7)
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
         ax.set_ylabel(r"Local exponent $K(n) = \mathrm{d}\ln\langle I_n\rangle/\mathrm{d}\ln I_0$")
@@ -420,37 +538,20 @@ class PowerScanAnalyzer:
         return self._finish(fig, ax, own, r"Effective nonlinearity $K(n)$",
                             h, lab, legend_kw=dict(loc='best'))
 
-
     def _resolve_keep(self, harmonics, pairs):
-        """Normalise the selection arguments shared by the power-scan plots into a harmonic set
-        `keep_h` (all harmonics when `harmonics` is None) and an explicit cross-pair set `keep_p`
-        (None when `pairs` is not given)."""
         keep_h = set(self.harmonics if harmonics is None else harmonics)
         keep_p = {tuple(sorted(p)) for p in pairs} if pairs is not None else None
         return keep_h, keep_p
 
-
     @staticmethod
     def _keep_pair(m, n, keep_h, keep_p):
-        """Whether a cross pair (m, n) should be shown given the harmonic set `keep_h` and the
-        optional explicit pair set `keep_p` (which takes precedence)."""
         if keep_p is not None:
             return tuple(sorted((m, n))) in keep_p
         return m in keep_h and n in keep_h
 
-
     def plot_g2_vs_power(self, ax=None, include_cross=False, harmonics=None, pairs=None,
                          xlim=None, ylim=(0.9, 1.6)):
-        """Plot 1: g^(2) vs I_0 — a family of distinct curves (one per harmonic / pair).
-
-        Toggle what is shown (e.g. to drop a harmonic a given cut does not produce):
-          * `harmonics` -> iterable of orders to keep (default: all); also restricts which cross
-                           pairs appear (both members must be kept),
-          * `pairs`     -> explicit list of cross pairs to keep, e.g. [(3, 5)] (takes precedence).
-
-        `ylim` defaults to (0.9, 1.6) to zoom on the fluctuations; pass another (lo, hi) tuple
-        to rescale or None to autoscale. `xlim` works the same way on the power axis.
-        """
+        """g^(2)(0) vs I_0 — a family of distinct curves (one per harmonic / pair)."""
         fig, ax, own = self._ax(ax)
         keep_h, keep_p = self._resolve_keep(harmonics, pairs)
         for n in self.harmonics:
@@ -477,21 +578,9 @@ class PowerScanAnalyzer:
         return self._finish(fig, ax, own, r"$g^{(2)}(0)$ vs pump power",
                             h, lab, legend_kw=dict(ncol=2, loc='best'))
 
-
     def plot_g2_collapse(self, ax=None, slope='local', include_cross=True, show_mean=True,
                          harmonics=None, pairs=None, xlim=None, ylim=(0, 0.015)):
-        """Plot 2: (g^(2)_n - 1)/K^2(n) vs I_0 — all harmonics should COLLAPSE onto g2_0 - 1.
-
-        Auto pairs are divided by K^2(n), cross pairs by K(m)K(n). The black line is the mean
-        over the shown pairs (the inferred pump excess g2_0 - 1), the grey band its 1-sigma spread.
-
-        Toggle what is shown (and what the mean is taken over):
-          * `harmonics` -> iterable of orders to keep (default: all); also restricts cross pairs,
-          * `pairs`     -> explicit list of cross pairs to keep, e.g. [(3, 5)] (takes precedence).
-
-        `xlim`/`ylim` set the axis ranges ((lo, hi) tuples); pass None to autoscale (handy when
-        the collapsed values fall outside the default zoom window).
-        """
+        """(g^(2)_n - 1)/K^2(n) vs I_0 — all harmonics should COLLAPSE onto g2_0 - 1."""
         fig, ax, own = self._ax(ax)
         keep_h, keep_p = self._resolve_keep(harmonics, pairs)
         for n in self.harmonics:
@@ -525,17 +614,12 @@ class PowerScanAnalyzer:
                             r"Rescaled collapse $\;\to\; g^{(2)}_0 - 1 = \sigma^2$",
                             h, lab, legend_kw=dict(ncol=2, loc='upper right'))
 
-
     def plot_overview(self, slope='local', n_fit=None, split=None, per_channel=True,
                       harmonics=None, channels=None, pairs=None,
                       g2_ylim=(0.9, 1.6), collapse_ylim=(0, 0.015)):
         """2x2 dashboard mirroring the model: g^(2) vs power, the rescaled collapse, the
-        intensity scaling (log-log) and the local exponent K(n).
-
-        `g2_ylim`/`collapse_ylim` zoom panels (1) and (2) (None autoscales). `harmonics`/`pairs`
-        select which harmonics/cross pairs are shown across panels (1)-(3); `channels`/`split`/
-        `n_fit`/`per_channel` further control the intensity-scaling fit of panel (3)."""
-        fig, axes = plt.subplots(2, 2, figsize=(18, 14), dpi=300)
+        intensity scaling (log-log) and the local exponent K(n). Returns (fig, axes)."""
+        fig, axes = plt.subplots(2, 2, figsize=(18, 14), dpi=_INTERACTIVE_DPI)
         self.plot_g2_vs_power(ax=axes[0, 0], include_cross=True, harmonics=harmonics,
                               pairs=pairs, ylim=g2_ylim)
         axes[0, 0].set_title(r"(1) $g^{(2)}(0)$ vs pump power", fontsize=15)
@@ -551,5 +635,161 @@ class PowerScanAnalyzer:
         fig.text(0.5, 0.93, self.header, ha='center', fontsize=11, color='#555555')
         fig.subplots_adjust(top=0.91, hspace=0.20, wspace=0.20,
                             left=0.07, right=0.97, bottom=0.06)
-        plt.show()
+        return fig, axes
+
+
+# =============================================================================
+# Comparison of several power scans (e.g. P1 vs no-P1, filter A vs filter B)
+# =============================================================================
+
+class PowerScanComparison:
+    """Overlay the model curves of several power scans to read off the effect of a
+    configuration change (polariser, filter, ...).
+
+    Parameters
+    ----------
+    scans : dict[str, PowerScanAnalyzer]
+        ``{label: analyzer}``; the label names the curve in every legend.
+    harmonics : tuple[int], optional
+        Restrict to these orders (default: the intersection across scans).
+    """
+
+    def __init__(self, scans, harmonics=None):
+        if len(scans) < 2:
+            raise ValueError("Need at least two power scans to compare.")
+        self.scans = dict(scans)
+        self.labels = list(self.scans)
+        common = set.intersection(*[set(a.harmonics) for a in self.scans.values()])
+        self.harmonics = tuple(sorted(harmonics if harmonics is not None else common))
+        self.color = {lab: _SCAN_COLORS[i % len(_SCAN_COLORS)]
+                      for i, lab in enumerate(self.labels)}
+
+    @staticmethod
+    def _ax(ax, figsize=(9, 6.5)):
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize, dpi=_INTERACTIVE_DPI)
+            return fig, ax, True
+        return ax.figure, ax, False
+
+    @staticmethod
+    def _finish(fig, ax, own, title, subtitle=None, legend_kw=None):
+        lk = dict(framealpha=0.92, edgecolor='0.7', fontsize=10)
+        if legend_kw:
+            lk.update(legend_kw)
+        ax.legend(**lk)
+        if own:
+            fig.suptitle(title, fontsize=16, y=0.95)
+            if subtitle:
+                ax.set_title(subtitle, fontsize=9.5, color='#555555')
+            fig.tight_layout()
+        return fig, ax
+
+    def _hmark(self, i):
+        return ['o', 's', '^', 'D', 'v', 'P'][i % 6]
+
+    def plot_g2_vs_power(self, ax=None, harmonics=None, xlim=None, ylim=(0.9, 1.6)):
+        """Overlay g^(2)_nn(P) for every scan (colour = scan, marker = harmonic)."""
+        fig, ax, own = self._ax(ax)
+        hs = harmonics or self.harmonics
+        for lab, a in self.scans.items():
+            for i, n in enumerate(hs):
+                if n not in a.harmonics:
+                    continue
+                ax.plot(a.I0, a.g2_auto[n], marker=self._hmark(i), ls='-',
+                        color=self.color[lab], ms=6,
+                        label=rf"{lab} — $H_{{{n}}}$")
+        ax.axhline(1.0, color='#313131', ls='--', lw=1.2, alpha=0.7)
+        ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
+        ax.set_ylabel(r"$g^{(2)}(0)$")
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        return self._finish(fig, ax, own, r"$g^{(2)}(0)$ vs pump power — comparison",
+                            legend_kw=dict(ncol=len(self.scans), loc='best'))
+
+    def plot_local_slope(self, ax=None, harmonics=None, xlim=None, ylim=None):
+        """Overlay K(n)(P) for every scan."""
+        fig, ax, own = self._ax(ax, figsize=(9, 6))
+        hs = harmonics or self.harmonics
+        for lab, a in self.scans.items():
+            for i, n in enumerate(hs):
+                if n not in a.harmonics:
+                    continue
+                Pc, Kc = a.exponent_curve(n)
+                ax.semilogx(Pc, Kc, ls='-', color=self.color[lab],
+                            marker=(None if a.has_dense else self._hmark(i)),
+                            ms=6, label=rf"{lab} — $K({n})$")
+        for i, n in enumerate(hs):
+            ax.axhline(n, color='0.6', ls=':', lw=1.1, alpha=0.6)
+        ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
+        ax.set_ylabel(r"$K(n) = \mathrm{d}\ln\langle I_n\rangle/\mathrm{d}\ln I_0$")
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        return self._finish(fig, ax, own, r"Effective nonlinearity $K(n)$ — comparison",
+                            legend_kw=dict(ncol=len(self.scans), loc='best'))
+
+    def plot_intensity_scaling(self, ax=None, harmonics=None, xlim=None, ylim=None):
+        """Overlay the merged-harmonic intensity scaling <I_n>(P) for every scan."""
+        fig, ax, own = self._ax(ax)
+        hs = harmonics or self.harmonics
+        for lab, a in self.scans.items():
+            for i, n in enumerate(hs):
+                if n not in a.harmonics:
+                    continue
+                if a.has_dense and n in a.In_dense:
+                    ax.loglog(a.P_dense, a.In_dense[n], '.', color=self.color[lab],
+                              ms=4, alpha=0.4)
+                ax.loglog(a.I0, a.In[n], marker=self._hmark(i), ls='-',
+                          color=self.color[lab], ms=6, label=rf"{lab} — $H_{{{n}}}$")
+        ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
+        ax.set_ylabel(r"Intensity (counts/s)")
+        ax.grid(True, which='both', alpha=0.25)
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        return self._finish(fig, ax, own,
+                            r"Harmonic intensity scaling $\langle I_n\rangle \sim I_0^{K(n)}$ — comparison",
+                            legend_kw=dict(ncol=len(self.scans), loc='lower right'))
+
+    def plot_inferred_sigma2(self, ax=None, slope='local', harmonics=None,
+                             include_cross=True, xlim=None, ylim=None):
+        """Overlay the inferred pump excess sigma^2 = g2_0 - 1 (mean over harmonics)
+        for every scan, with its 1-sigma band — the headline comparison."""
+        fig, ax, own = self._ax(ax)
+        for lab, a in self.scans.items():
+            mean, std = a.inferred_g2_0(slope, harmonics=harmonics,
+                                        pairs=(None if include_cross else []))
+            c = self.color[lab]
+            ax.plot(a.I0, mean, 'o-', color=c, ms=6, label=rf"{lab}")
+            ax.fill_between(a.I0, mean - std, mean + std, color=c, alpha=0.13)
+        ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
+        ax.set_ylabel(r"$\sigma^2 = g^{(2)}_0 - 1$")
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        return self._finish(fig, ax, own,
+                            r"Inferred pump excess $\sigma^2$ — comparison",
+                            legend_kw=dict(loc='best'))
+
+    def plot_overview(self, slope='local', harmonics=None,
+                      g2_ylim=(0.9, 1.6), sigma2_ylim=None):
+        """2x2 comparison dashboard: g^(2) vs power, inferred sigma^2, intensity
+        scaling and K(n), each overlaying every scan. Returns (fig, axes)."""
+        fig, axes = plt.subplots(2, 2, figsize=(18, 14), dpi=_INTERACTIVE_DPI)
+        self.plot_g2_vs_power(ax=axes[0, 0], harmonics=harmonics, ylim=g2_ylim)
+        axes[0, 0].set_title(r"(1) $g^{(2)}(0)$ vs pump power", fontsize=15)
+        self.plot_inferred_sigma2(ax=axes[0, 1], slope=slope, harmonics=harmonics, ylim=sigma2_ylim)
+        axes[0, 1].set_title(r"(2) Inferred $\sigma^2 = g^{(2)}_0 - 1$", fontsize=15)
+        self.plot_intensity_scaling(ax=axes[1, 0], harmonics=harmonics)
+        axes[1, 0].set_title(r"(3) Intensity scaling $\langle I_n\rangle \sim I_0^{K(n)}$", fontsize=15)
+        self.plot_local_slope(ax=axes[1, 1], harmonics=harmonics)
+        axes[1, 1].set_title(r"(4) Local exponent $K(n)$", fontsize=15)
+        fig.suptitle("Power-scan comparison", fontsize=19, y=0.96)
+        fig.subplots_adjust(top=0.92, hspace=0.20, wspace=0.20,
+                            left=0.07, right=0.97, bottom=0.06)
         return fig, axes

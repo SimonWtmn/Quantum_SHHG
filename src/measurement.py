@@ -29,6 +29,7 @@ from .hardware import TimeTaggerDevice
 __all__ = [
     "CorrelationRecorder",
     "CombinedRecorder",
+    "CountrateRecorder",
     "coincidence_threshold_stop",
 ]
 
@@ -335,6 +336,81 @@ class CombinedRecorder(CorrelationRecorder):
         super().__init__(mode=mode,
                          record_physical_histograms=record_physical_histograms,
                          write_raw=True, max_file_size_mb=max_file_size_mb)
+
+
+class CountrateRecorder(Recorder):
+    """Lightweight recorder that stores ONLY per-channel count rates (no
+    correlations, no coincidences, no raw stream).
+
+    It is meant for the dense *intensity scan* used to compute the effective
+    nonlinearity ``K(n) = d ln<I_n>/d ln I_0``: by stepping a half-wave plate
+    angle (which attenuates the pump) one can record the harmonic intensities at
+    many extra "fictional" powers very cheaply, giving a much smoother K(n) than
+    the handful of full power-scan points.
+
+    Each acquisition writes a tiny ``<stem>.pkl`` with the same schema keys read
+    by :class:`~src.core.HBTMeasurement` (``counts_physical`` /
+    ``countrates_physical`` and the merged-harmonic ``counts_virtual`` /
+    ``countrates_virtual``), so the analyser treats it like any other run but
+    only its intensities are meaningful.
+    """
+
+    name = "countrate"
+
+    def record(self, device: TimeTaggerDevice, duration_ps: int, savepath: Path,
+               *, params: dict, logger: logging.Logger) -> dict:
+        import TimeTagger as TT
+
+        tagger = device._require()
+        tt = params["general"]["timetagging"]
+        channels = list(tt["channels"])
+        mode_on_channel = list(tt["mode_on_channel"])
+
+        logger.info("Countrate-only recording (%.2f s) ...", duration_ps * 1e-12)
+        cr = TT.Countrate(tagger, channels)
+        cr.startFor(int(duration_ps))
+        cr.waitUntilFinished()
+        counts = cr.getCountsTotal()
+        rates = cr.getData()
+        del cr
+
+        counts_physical = {str(ch): int(counts[i]) for i, ch in enumerate(channels)}
+        countrates_physical = {str(ch): float(rates[i]) for i, ch in enumerate(channels)}
+
+        # Merge T + R into per-harmonic virtual intensities (e.g. H3 = H3T + H3R).
+        modes = CorrelationRecorder.build_modes(channels, mode_on_channel)
+        counts_virtual, countrates_virtual = {}, {}
+        for name, phys in modes.items():
+            counts_virtual[name] = int(sum(counts_physical[str(c)] for c in phys))
+            countrates_virtual[name] = float(sum(countrates_physical[str(c)] for c in phys))
+
+        results = {
+            "recorder": self.name,
+            "duration_ps": int(duration_ps),
+            "counts_physical": counts_physical,
+            "countrates_physical": countrates_physical,
+            "counts_virtual": counts_virtual,
+            "countrates_virtual": countrates_virtual,
+        }
+        save_pickle({"Parameters": params, "data": results}, str(savepath) + ".pkl")
+        logger.info("Saved countrate point -> %s.pkl", savepath)
+        return results
+
+    def merge(self, accumulated: Optional[dict], new: dict) -> dict:
+        if accumulated is None:
+            return _copy_result(new)
+        d_acc = accumulated.get("duration_ps", 0) or 0
+        d_new = new.get("duration_ps", 0) or 0
+        total = (d_acc + d_new) or 1
+        w_acc, w_new = d_acc / total, d_new / total
+        merged = dict(accumulated)
+        merged["duration_ps"] = d_acc + d_new
+        for key in ("counts_physical", "counts_virtual"):
+            merged[key] = _sum_scalar_maps(accumulated.get(key, {}), new.get(key, {}))
+        for key in ("countrates_physical", "countrates_virtual"):
+            merged[key] = _weighted_maps(accumulated.get(key, {}), new.get(key, {}),
+                                         w_acc, w_new)
+        return merged
 
 
 # =============================================================================

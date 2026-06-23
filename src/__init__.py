@@ -25,12 +25,21 @@ from .hardware import (
 from .measurement import (
     CorrelationRecorder,
     CombinedRecorder,
+    CountrateRecorder,
     coincidence_threshold_stop,
 )
 from .core import HBTMeasurement
 from .visu import GridVisualizer
-from .powerscan import PowerScanAnalyzer
-from .report import AnalysisReport, load_run, discover_runs, find_run_pkl
+from .powerscan import PowerScanAnalyzer, PowerScanComparison, malus_power
+from .report import (
+    AnalysisReport,
+    PowerScanReport,
+    PowerScanComparisonReport,
+    load_run,
+    discover_runs,
+    discover_power_scan,
+    find_run_pkl,
+)
 
 __all__ = [
     # acquisition
@@ -51,13 +60,19 @@ __all__ = [
     # recorders / processing
     "CorrelationRecorder",
     "CombinedRecorder",
+    "CountrateRecorder",
     "coincidence_threshold_stop",
     # analysis
     "HBTMeasurement",
     "GridVisualizer",
     "PowerScanAnalyzer",
+    "PowerScanComparison",
+    "malus_power",
     "AnalysisReport",
+    "PowerScanReport",
+    "PowerScanComparisonReport",
     "load_run",
     "discover_runs",
+    "discover_power_scan",
     "find_run_pkl",
 ]
