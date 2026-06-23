@@ -409,6 +409,15 @@ class PRM1Stage(RotationStage):
         return [str(sn) for sn in DeviceManagerCLI.GetDeviceList()
                 if str(sn).startswith("27")]
 
+    def _configure_mount(self, device):
+        """Load PRM1/MZ8 motor parameters into the K-Cube (required before MoveTo)."""
+        motor_config = device.LoadMotorConfiguration(device.DeviceID)
+        settings = device.MotorDeviceSettings
+        device.GetSettings(settings)
+        motor_config.DeviceSettingsName = self._DEVICE_SETTINGS_NAME
+        motor_config.UpdateCurrentConfiguration()
+        device.SetSettings(settings, True, False)
+
     def connect(self) -> "PRM1Stage":
         DeviceManagerCLI, KCubeDCServo, Decimal = self._load_kinesis()
         self._Decimal = Decimal
@@ -420,11 +429,21 @@ class PRM1Stage(RotationStage):
 
         device.Connect(self.stage_id)
         time.sleep(0.125)
+
+        if not device.IsSettingsInitialized():
+            device.WaitForSettingsInitialized(10000)
+        if not device.IsSettingsInitialized():
+            raise RuntimeError(
+                f"PRM1 stage {self.stage_id}: device settings failed to initialize "
+                "(check USB / Kinesis / that no other app holds the stage)."
+            )
+
         device.StartPolling(250)
         time.sleep(0.125)
         device.EnableDevice()
         time.sleep(0.125)
-        device.WaitForSettingsInitialized(10000)
+        self._configure_mount(device)
+        time.sleep(0.125)
 
         self._device = device
         self._connected = True
