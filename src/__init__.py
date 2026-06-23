@@ -24,10 +24,16 @@ from .hardware import (
 )
 from .measurement import (
     CorrelationRecorder,
+    CombinedRecorder,
     coincidence_threshold_stop,
 )
+from .core import HBTMeasurement
+from .visu import GridVisualizer
+from .powerscan import PowerScanAnalyzer
+from .report import AnalysisReport, load_run, discover_runs, find_run_pkl
 
 __all__ = [
+    # acquisition
     "AcquisitionConfig",
     "LaserParams",
     "TimeTaggerParams",
@@ -36,11 +42,22 @@ __all__ = [
     "Recorder",
     "RawTimeTagRecorder",
     "Acquisition",
+    # hardware
     "TimeTaggerDevice",
     "RotationStage",
     "PRM1Stage",
     "ELL14Stage",
     "RotationStageController",
+    # recorders / processing
     "CorrelationRecorder",
+    "CombinedRecorder",
     "coincidence_threshold_stop",
+    # analysis
+    "HBTMeasurement",
+    "GridVisualizer",
+    "PowerScanAnalyzer",
+    "AnalysisReport",
+    "load_run",
+    "discover_runs",
+    "find_run_pkl",
 ]

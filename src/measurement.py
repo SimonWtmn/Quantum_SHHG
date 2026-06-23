@@ -28,6 +28,7 @@ from .hardware import TimeTaggerDevice
 
 __all__ = [
     "CorrelationRecorder",
+    "CombinedRecorder",
     "coincidence_threshold_stop",
 ]
 
@@ -48,8 +49,13 @@ class CorrelationRecorder(Recorder):
     record_physical_histograms : bool
         Also store the genuine per-detector-pair correlation histograms
         (``correlations_physical``). Recommended: it lets
-        :class:`~src.hbt_core.HBTMeasurement` compute the artefact-free physical
+        :class:`~src.core.HBTMeasurement` compute the artefact-free physical
         g^(2) by the peak-area method.
+    write_raw : bool
+        Also stream the raw photon time tags to a ``.ttbin`` alongside the reduced
+        ``.pkl`` (see :class:`CombinedRecorder`). Off by default.
+    max_file_size_mb : float
+        Max size per ``.ttbin`` subfile when ``write_raw`` (0 = single file).
     """
 
     name = "correlation" 
@@ -57,9 +63,13 @@ class CorrelationRecorder(Recorder):
     VIRTUAL_MODES = ("g2_heralded_virtual",)
 
     def __init__(self, mode: Optional[str] = None,
-                 record_physical_histograms: bool = True):
+                 record_physical_histograms: bool = True,
+                 write_raw: bool = False,
+                 max_file_size_mb: float = 100.0):
         self.mode = mode
         self.record_physical_histograms = record_physical_histograms
+        self.write_raw = write_raw
+        self.max_file_size_mb = max_file_size_mb
 
     @staticmethod
     def build_modes(channels, mode_on_channel) -> "dict[str, list[int]]":
@@ -139,8 +149,18 @@ class CorrelationRecorder(Recorder):
                 _vc_store.append(coincidence_vc)
                 heralded_vcs[key] = coincidence_vc
 
+        file_writer = None
+        ttbin_path = None
         with TT.SynchronizedMeasurements(tagger) as sync:
             sm = sync.getTagger()
+
+            # Optionally stream raw tags to .ttbin in the SAME measurement group, so
+            # the run yields both the reduced .pkl and the full raw .ttbin at once.
+            if self.write_raw:
+                ttbin_path = str(savepath.with_suffix(".ttbin"))
+                file_writer = TT.FileWriter(sm, ttbin_path, channels)
+                if self.max_file_size_mb > 0:
+                    file_writer.setMaxFileSize(int(self.max_file_size_mb * 1024 * 1024))
 
             phys_counts = TT.Countrate(sm, channels)
             phys_pairs = list(combinations(channels, 2))
@@ -228,6 +248,14 @@ class CorrelationRecorder(Recorder):
                     "counts": {"herald": int(h_c), "heralded_s1": int(hs1_c)},
                 }
 
+        if file_writer is not None:
+            results["ttbin_file"] = ttbin_path
+            results["total_events"] = int(file_writer.getTotalEvents())
+            results["total_size"] = int(file_writer.getTotalSize())
+            logger.info("Raw tags -> %s (%d events, %.2f MB)", ttbin_path,
+                        results["total_events"], results["total_size"] / (1024 * 1024))
+            del file_writer
+
         del _vc_store
 
         save_pickle({"Parameters": params, "data": results}, str(savepath) + ".pkl")
@@ -273,7 +301,40 @@ class CorrelationRecorder(Recorder):
                 accumulated.get("heralded_threefold", {}), new["heralded_threefold"],
                 w_acc, w_new)
 
+        # Raw .ttbin bookkeeping when running the combined recorder.
+        if "ttbin_file" in new or "ttbin_files" in accumulated:
+            files = list(accumulated.get("ttbin_files", []))
+            if "ttbin_file" in accumulated and accumulated["ttbin_file"] not in files:
+                files.append(accumulated["ttbin_file"])
+            if "ttbin_file" in new:
+                files.append(new["ttbin_file"])
+            merged["ttbin_files"] = files
+        for key in ("total_events", "total_size"):
+            if key in new:
+                merged[key] = accumulated.get(key, 0) + new[key]
+
         return merged
+
+
+class CombinedRecorder(CorrelationRecorder):
+    """Record BOTH the raw time tags (``.ttbin``) and the live-reduced correlation
+    statistics (``.pkl``) from a single acquisition.
+
+    It is exactly :class:`CorrelationRecorder` with ``write_raw=True``: the raw
+    :class:`FileWriter` is attached to the same ``SynchronizedMeasurements`` group
+    as the correlations, so one run produces, per chunk, a ``.ttbin`` (full raw
+    stream) and a ``.pkl`` (histograms + scalars), and the chunked orchestrator
+    additionally writes the usual ``MERGED/..._MERGED.pkl``.
+    """
+
+    name = "combined"
+
+    def __init__(self, mode: Optional[str] = None,
+                 record_physical_histograms: bool = True,
+                 max_file_size_mb: float = 100.0):
+        super().__init__(mode=mode,
+                         record_physical_histograms=record_physical_histograms,
+                         write_raw=True, max_file_size_mb=max_file_size_mb)
 
 
 # =============================================================================

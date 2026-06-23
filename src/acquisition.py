@@ -122,7 +122,7 @@ class LaserParams:
 class TimeTaggerParams:
     """Everything needed to configure the TimeTagger and describe the channels.
 
-    The field names mirror the schema consumed by :class:`src.hbt_core.HBTMeasurement`
+    The field names mirror the schema consumed by :class:`src.core.HBTMeasurement`
     so a recorder's output is directly analysable downstream.
     """
     tt_mode: str = "Standard"
@@ -182,16 +182,25 @@ class AcquisitionConfig:
     chunking: ChunkingParams = field(default_factory=ChunkingParams)
     repeats: int = 1
     tt_serial: str = ""
+    configuration: dict = field(default_factory=dict)
     custom: dict = field(default_factory=dict)
 
     def general_params(self, date: str, time_hms: str, save_dir: Path) -> dict:
-        """Build the ``general`` parameter block (project-wide schema)."""
+        """Build the ``general`` parameter block (project-wide schema).
+
+        ``configuration`` is the structured, per-test optical configuration
+        (polarisers in/out, filters per harmonic, filter layout, ...). Keeping it
+        separate from ``material`` means the sample tag stays clean (e.g.
+        ``"CdTe110"``) while the analysis layer reads the conditions for titles and
+        legends from a typed block rather than by parsing the sample string.
+        """
         return {
             "date": date,
             "time": time_hms,
             "experiment_type": self.experiment_type,
             "save_dir": str(save_dir),
             "material": self.material,
+            "configuration": dict(self.configuration),
             "laser": asdict(self.laser),
             "timetagging": self.timetagging.to_schema(),
             "custom": dict(self.custom),
