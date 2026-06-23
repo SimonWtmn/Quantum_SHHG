@@ -61,15 +61,30 @@ _IDEAL_GREY = '0.45'
 _INTERACTIVE_DPI = 110
 
 
-def malus_power(angle_deg, p_max, theta0_deg=0.0, offset=0.0):
-    """Pump power transmitted by a half-wave-plate + polariser at ``angle_deg``.
+def malus_power(angle_deg, p_max, theta0=0.0, offset=0.0, factor=2.0):
+    """Pump power transmitted by a rotating wave-plate / polariser at ``angle_deg``.
 
-    ``P(theta) = offset + p_max * cos^2(theta - theta0)`` (Malus' law). Used to turn
-    a dense rotation-stage angle scan into the equivalent pump powers that feed the
-    ``K(n)`` computation. ``angle_deg`` may be a scalar or an array.
+    ``P(theta) = offset + p_max * cos^2(factor * (theta - theta0))`` (Malus' law).
+
+    ``factor`` encodes the optic: use ``2`` for a half-wave plate in front of a fixed
+    polariser (a 45 deg plate rotation gives a full min->max swing) and ``1`` for a
+    rotating polariser / analyser. ``angle_deg`` may be a scalar or an array.
     """
-    a = np.deg2rad(np.asarray(angle_deg, dtype=float) - theta0_deg)
+    a = np.deg2rad(factor * (np.asarray(angle_deg, dtype=float) - theta0))
     return offset + p_max * np.cos(a) ** 2
+
+
+def malus_angle(power, p_max, theta0=0.0, offset=0.0, factor=2.0):
+    """Inverse of :func:`malus_power`: the stage angle (deg) that transmits ``power``.
+
+    Returns the angle on the first monotonic branch above ``theta0`` (in
+    ``[theta0, theta0 + 90/factor]``), i.e. increasing the angle decreases the power.
+    The requested power is clamped to the achievable ``[offset, offset + p_max]`` range.
+    """
+    power = np.asarray(power, dtype=float)
+    frac = np.clip((power - offset) / p_max, 0.0, 1.0)
+    a = np.arccos(np.sqrt(frac))            # in [0, pi/2]
+    return theta0 + np.rad2deg(a) / factor
 
 
 class PowerScanAnalyzer:
@@ -137,7 +152,8 @@ class PowerScanAnalyzer:
             return float(malus_power(run.rotation_stage,
                                      self.malus.get('p_max', 1.0),
                                      self.malus.get('theta0', 0.0),
-                                     self.malus.get('offset', 0.0)))
+                                     self.malus.get('offset', 0.0),
+                                     self.malus.get('factor', 2.0)))
         return None
 
     @staticmethod

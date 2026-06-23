@@ -406,7 +406,7 @@ class Acquisition:
     # -- setup / teardown -----------------------------------------------------
 
     def setup(self) -> "Acquisition":
-        """Connect the tagger, validate channels and apply the configuration."""
+        """Connect the tagger, validate channels, and connect any rotation stages."""
         self.logger.info("=" * 20 + " ACQUISITION SETUP " + "=" * 20)
         save_json(self._general_params, self.save_dir / "general_parameters.json")
 
@@ -424,6 +424,20 @@ class Acquisition:
             self.device.set_input_delays(tt.channels, tt.delays_ps)
         if tt.trigger and tt.filter:
             self.device.set_conditional_filter(tt.trigger, tt.filter)
+
+        # Connect rotation stages (if provided and not yet connected).
+        # Kinesis grants exclusive USB access, so this raises a clear error when
+        # the Thorlabs application is already open.
+        if self.stages is not None and not self.stages.stages:
+            self.stages.connect()
+            failed = set(self.stages._requested) - set(self.stages.stages)
+            if failed:
+                raise RuntimeError(
+                    f"Failed to connect rotation stage(s): {failed}. "
+                    "Check the USB cable and make sure no other application "
+                    "(e.g. the Thorlabs Kinesis GUI) is holding the device."
+                )
+
         self.logger.info("Recorder: %s", self.recorder.name)
         return self
 
@@ -480,8 +494,10 @@ class Acquisition:
         params = {"general": self._general_params,
                   "experimental": self._experiment_params(duration_ps, savepath, point)}
         self.logger.info("Single acquisition '%s' (%.2f min)", stem, duration_s / 60)
-        return self.recorder.record(self.device, duration_ps, savepath,
-                                    params=params, logger=self.logger)
+        result = self.recorder.record(self.device, duration_ps, savepath,
+                                      params=params, logger=self.logger)
+        self._log_countrates(result)
+        return result
 
     # -- chunked --------------------------------------------------------------
 
@@ -517,6 +533,7 @@ class Acquisition:
 
             result = self.recorder.record(self.device, chunk_ps, savepath,
                                           params=params, logger=self.logger)
+            self._log_countrates(result, i + 1)
             merged = self.recorder.merge(merged, result)
 
             if (i + 1) % ch.check_every_n_chunks == 0:
@@ -552,6 +569,24 @@ class Acquisition:
                 self.logger.info("Point '%s' completed in %.2f min", stem, dt_min)
 
     # -- helpers --------------------------------------------------------------
+
+    def _log_countrates(self, result: dict, chunk_no: Optional[int] = None) -> None:
+        """Log per-channel singles count rate (counts/s) for a finished acquisition,
+        labelled by the channel's mode name (H3T, H3R, ...). Used to sanity-check a
+        chunk live without opening the data."""
+        rates = result.get("countrates_physical") or result.get("countrates")
+        if not rates:
+            return
+        tt = self.config.timetagging
+        names = dict(zip([str(c) for c in tt.channels], tt.mode_on_channel))
+        parts = []
+        for ch in tt.channels:
+            r = rates.get(str(ch))
+            if r is None:
+                continue
+            parts.append(f"{names.get(str(ch), f'Ch{ch}')}={r:,.0f}")
+        tag = f"chunk {chunk_no}" if chunk_no is not None else "rates"
+        self.logger.info("Count rates (c/s) [%s]: %s", tag, "  ".join(parts))
 
     def _default_single_duration_s(self) -> float:
         return self.config.chunking.chunk_minutes * 60.0

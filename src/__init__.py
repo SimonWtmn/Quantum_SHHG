@@ -30,7 +30,7 @@ from .measurement import (
 )
 from .core import HBTMeasurement
 from .visu import GridVisualizer
-from .powerscan import PowerScanAnalyzer, PowerScanComparison, malus_power
+from .powerscan import PowerScanAnalyzer, PowerScanComparison, malus_power, malus_angle
 from .report import (
     AnalysisReport,
     PowerScanReport,
@@ -68,6 +68,7 @@ __all__ = [
     "PowerScanAnalyzer",
     "PowerScanComparison",
     "malus_power",
+    "malus_angle",
     "AnalysisReport",
     "PowerScanReport",
     "PowerScanComparisonReport",
