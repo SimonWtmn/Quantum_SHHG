@@ -126,19 +126,49 @@ def load_run(path):
     return HBTMeasurement(find_run_pkl(path))
 
 
+def _loose_point_pkls(folder):
+    """Independent per-point pickles sitting loose in one folder (e.g. a
+    count-rate intensity scan: ``ang_44.pkl``, ``ang_46.pkl``, ...).
+
+    Returns them only when the folder is NOT a single chunked run, i.e. it has no
+    ``MERGED/`` and no ``*chunk*`` pickles. Such a folder holds many runs (one per
+    file), not one run made of chunks — so each file is its own measurement.
+    """
+    folder = Path(folder)
+    if list(folder.glob("MERGED/*_MERGED.pkl")):
+        return []
+    loose = [f for f in folder.glob("*.pkl") if not f.name.endswith(".meta.pkl")]
+    if any("chunk" in f.name for f in loose):
+        return []
+    return sorted(loose) if len(loose) >= 2 else []
+
+
 def discover_runs(root, prefer_merged=True, sort_key="time"):
     """Find every acquisition run under ``root`` and load it.
 
     A "run" is any directory that yields a data pickle via :func:`find_run_pkl`
-    (i.e. it has a ``MERGED/`` or chunk pickles). Returns a list of
-    :class:`HBTMeasurement`, sorted by ``sort_key`` in {'time', 'angle', 'power',
-    'config', 'name'}.
+    (a ``MERGED/`` or chunk pickles). Folders holding many loose per-point pickles
+    (e.g. a count-rate intensity scan, one ``ang_*.pkl`` per angle) contribute one
+    run PER file. Returns a list of :class:`HBTMeasurement`, sorted by ``sort_key``
+    in {'time', 'angle', 'power', 'config', 'name'}.
     """
     root = Path(root)
     seen, runs = set(), []
     candidates = [root] + [d for d in root.rglob("*") if d.is_dir()]
     for d in candidates:
         if d.name.upper() == "MERGED":
+            continue
+        loose = _loose_point_pkls(d)
+        if loose:
+            for pkl in loose:
+                key = pkl.resolve()
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    runs.append(HBTMeasurement(pkl))
+                except Exception as exc:  # noqa: BLE001 - keep going
+                    print(f"[discover_runs] skipped {pkl}: {exc}")
             continue
         try:
             pkl = find_run_pkl(d)
@@ -478,10 +508,22 @@ class PowerScanReport(_FigureSink):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def save(self, fig, name, show=True):
+        """Save a single model figure under ``model/<name>.png`` and (optionally)
+        display it. Lets a notebook drive ONE plot per line with full control over
+        that plot's arguments, e.g.::
+
+            fig, _ = rep.analyzer.plot_g2_vs_power(harmonics=(3, 5), ylim=(0.9, 3))
+            rep.save(fig, "g2_vs_power")
+        """
+        self._emit(fig, self._mdir() / f"{name}.png", show)
+        return fig
+
     def model(self, slope="local", n_fit=None, split=None, per_channel=True,
               harmonics=None, channels=None, pairs=None, include_cross=True,
-              g2_ylim=None, r_ylim=None, collapse_ylim=(0, 0.015), overview=True,
-              show=True):
+              g2_ylim=None, r_ylim=None, collapse_ylim=(0, 0.015),
+              grid_g2_ylim=None, grid_r_ylim=None, grids=True, intensity_grid=True,
+              overview=True, show=True):
         """Build, save and (optionally) display the model plots + dashboard.
 
         ``g2_ylim``/``r_ylim`` default to ``None`` (auto-scale to the data) so a scan
@@ -495,12 +537,21 @@ class PowerScanReport(_FigureSink):
         if a.g2_cross:   # R is only defined for cross pairs (>= 2 harmonics)
             fig, _ = a.plot_R_vs_power(harmonics=harmonics, pairs=pairs, ylim=r_ylim)
             self._emit(fig, d / "R_vs_power.png", show)
+        if grids:        # per-detector-pair grids vs power (TT/TR/RT/RR)
+            fig, _ = a.plot_g2_grid_vs_power(ylim=grid_g2_ylim)
+            self._emit(fig, d / "g2_grid_vs_power.png", show)
+            if a.g2_cross:
+                fig, _ = a.plot_R_grid_vs_power(ylim=grid_r_ylim)
+                self._emit(fig, d / "R_grid_vs_power.png", show)
         fig, _ = a.plot_g2_collapse(slope=slope, include_cross=include_cross,
                                     harmonics=harmonics, pairs=pairs, ylim=collapse_ylim)
         self._emit(fig, d / "collapse.png", show)
         fig, _ = a.plot_intensity_scaling(n_fit=n_fit, split=split, per_channel=per_channel,
                                           harmonics=harmonics, channels=channels)
         self._emit(fig, d / "intensity_scaling.png", show)
+        if intensity_grid:
+            fig, _ = a.plot_intensity_grid(harmonics=harmonics, channels=channels)
+            self._emit(fig, d / "intensity_grid.png", show)
         fig, _ = a.plot_local_slope()
         self._emit(fig, d / "local_slope.png", show)
         if overview:

@@ -60,6 +60,10 @@ _IDEAL_GREY = '0.45'
 
 _INTERACTIVE_DPI = 110
 
+# Detector-pair grid geometry (mirrors src.visu): the cross rows are the four
+# arm combinations, with the auto-correlations sitting on their own header row.
+_CROSS_ROWS = ('TT', 'TR', 'RT', 'RR')
+
 
 def malus_power(angle_deg, p_max, theta0=0.0, offset=0.0, factor=2.0, branch=None):
     """Pump power transmitted by a rotating wave-plate / polariser at ``angle_deg``.
@@ -533,6 +537,163 @@ class PowerScanAnalyzer:
                             r"Harmonic intensity scaling $\langle I_n\rangle \sim I_0^{K(n)}$",
                             h, lab, legend_kw=dict(loc='lower right', ncol=ncol))
 
+    # ---------------- per-channel intensity scaling (fits) ----------------
+
+    @staticmethod
+    def _perturbative_fixed_fit(P, y, n, frac_low=0.6, min_pts=3, r2_min=0.5):
+        """Fit ``y = background + A * P^n`` with the exponent FIXED to the harmonic
+        order ``n`` over the lowest ``frac_low`` fraction of points (the perturbative
+        regime). The background is found by a 1-D search (log-space slope-``n`` fit
+        for each trial background); ``A`` is its amplitude. Returns a dict with
+        ``ok=False`` when the data does not follow ``P^n`` well enough."""
+        P = np.asarray(P, float); y = np.asarray(y, float)
+        good = np.isfinite(P) & np.isfinite(y) & (y > 0)
+        P, y = P[good], y[good]
+        order = np.argsort(P); P, y = P[order], y[order]
+        k = min(len(P), max(min_pts, int(np.ceil(len(P) * frac_low))))
+        if k < min_pts:
+            return dict(ok=False)
+        Pl, yl = P[:k], y[:k]
+        lx = np.log(Pl)
+        bg_grid = np.concatenate(([0.0], np.linspace(0.0, yl.min() * 0.999, 40)))
+        best = None
+        for bg in bg_grid:
+            z = yl - bg
+            if np.any(z <= 0):
+                continue
+            lz = np.log(z)
+            b = float(np.mean(lz - n * lx))           # slope fixed to n, intercept free
+            resid = lz - (n * lx + b)
+            sse = float(np.sum(resid ** 2))
+            sst = float(np.sum((lz - lz.mean()) ** 2))
+            r2 = 1 - sse / sst if sst > 0 else np.nan
+            if best is None or sse < best[0]:
+                best = (sse, bg, np.exp(b), r2)
+        if best is None:
+            return dict(ok=False)
+        _, bg, A, r2 = best
+        return dict(ok=(np.isfinite(r2) and r2 >= r2_min and A > 0),
+                    bg=float(bg), A=float(A), n=n, r2=float(r2), npts=k)
+
+    @staticmethod
+    def _free_high_fit(P, y, n_high=5, min_pts=2):
+        """Free-exponent log-log fit ``y = A * P^k`` over the last ``n_high`` points
+        (the high-power / non-perturbative end)."""
+        P = np.asarray(P, float); y = np.asarray(y, float)
+        good = np.isfinite(P) & np.isfinite(y) & (y > 0)
+        P, y = P[good], y[good]
+        order = np.argsort(P); P, y = P[order], y[order]
+        m = min(len(P), max(min_pts, int(n_high)))
+        if m < min_pts:
+            return dict(ok=False)
+        Ph, yh = P[-m:], y[-m:]
+        lx, ly = np.log(Ph), np.log(yh)
+        slope, intercept = np.polyfit(lx, ly, 1)
+        resid = ly - (slope * lx + intercept)
+        sst = float(np.sum((ly - ly.mean()) ** 2))
+        r2 = 1 - float(np.sum(resid ** 2)) / sst if sst > 0 else np.nan
+        return dict(ok=np.isfinite(slope), A=float(np.exp(intercept)),
+                    k=float(slope), r2=float(r2), npts=m)
+
+    @staticmethod
+    def _subsample(P, y, dense_stride=1, max_points=None):
+        """Thin a (P, y) curve for display. ``dense_stride`` keeps every Nth point
+        (after sorting by P); ``max_points`` further caps the count by an even
+        subsample. The first and last points are always kept so the fit range and
+        the high-power end stay anchored."""
+        P = np.asarray(P, float); y = np.asarray(y, float)
+        order = np.argsort(P)
+        P, y = P[order], y[order]
+        idx = np.arange(len(P))
+        if dense_stride and dense_stride > 1:
+            idx = idx[::int(dense_stride)]
+        if max_points is not None and len(idx) > max_points > 0:
+            idx = idx[np.linspace(0, len(idx) - 1, int(max_points)).round().astype(int)]
+        if len(P):
+            idx = np.unique(np.concatenate(([0], idx, [len(P) - 1])))
+        return P[idx], y[idx]
+
+    def plot_intensity_grid(self, channels=None, harmonics=None, frac_low=0.6,
+                            n_high=5, r2_min=0.5, dense_stride=1, max_points=None,
+                            xlim=None, ylim=None, figsize=(17, 10)):
+        """Per-channel harmonic-intensity scaling (one panel per detector).
+
+        Each panel shows the measured points (the dense scan when available, else the
+        power-scan points), the **perturbative fixed-order** fit ``y = bg + A\\,P^n``
+        (exponent fixed to the harmonic order ``n``, the ideal ``P^n`` law) and a
+        **free-order** fit ``y = A\\,P^k`` of the last ``n_high`` (high-power) points.
+
+        ``dense_stride``/``max_points`` control HOW MANY dense points are drawn
+        (``dense_stride=1`` -> every point; ``dense_stride=2`` -> every other;
+        ``max_points=15`` -> at most 15, evenly spaced). The fits always use the full
+        data, so thinning the markers never changes the result. Returns ``(fig, axes)``."""
+        keep_h, _ = self._resolve_keep(harmonics, None)
+        hs = [n for n in self.harmonics if n in keep_h]
+        arms = ('T', 'R')
+        keep_c = set(channels) if channels is not None else None
+        fig, axes = plt.subplots(len(arms), max(len(hs), 1), figsize=figsize,
+                                 dpi=_INTERACTIVE_DPI, squeeze=False)
+        for ai, arm in enumerate(arms):
+            for ci, n in enumerate(hs):
+                ax = axes[ai, ci]
+                name = f"H{n}{arm}"
+                if (keep_c is not None and name not in keep_c) or name not in self.In_ch:
+                    ax.set_visible(False)
+                    continue
+                if self.has_dense and name in self.In_ch_dense:
+                    P, y = self.P_dense, self.In_ch_dense[name]
+                else:
+                    P, y = self.I0, self.In_ch[name]
+                P = np.asarray(P, float); y = np.asarray(y, float)
+                Pp, yp = self._subsample(P, y, dense_stride, max_points)
+                try:
+                    ch = self.runs[0].get_ch(name)
+                except KeyError:
+                    ch = "?"
+                ax.loglog(Pp, yp, 'o', color='#3b76af', ms=4, alpha=0.7,
+                          label=f'Measured data ({len(Pp)} pts)')
+
+                good = np.isfinite(P) & np.isfinite(y) & (y > 0)
+                xs = (np.logspace(np.log10(P[good].min()), np.log10(P[good].max()), 200)
+                      if good.sum() >= 2 else None)
+                lo = self._perturbative_fixed_fit(P, y, n, frac_low=frac_low, r2_min=r2_min)
+                hi = self._free_high_fit(P, y, n_high=n_high)
+
+                txt = []
+                if lo.get('ok') and xs is not None:
+                    ax.loglog(xs, lo['bg'] + lo['A'] * xs ** n, '-', color='#ff7f0e', lw=2.0,
+                              label=rf"Perturbative: fixed $n={n}$, $R^2$={lo['r2']:.3f}")
+                    txt.append(rf"background = {lo['bg']:.3g} Hz")
+                    txt.append(rf"low: $A$={lo['A']:.3g} $P^{{{n}}}$")
+                else:
+                    txt.append("low fit unavailable")
+                if hi.get('ok') and xs is not None:
+                    ax.loglog(xs, hi['A'] * xs ** hi['k'], '--', color='#2ca02c', lw=2.0,
+                              label=rf"High power: free $n={hi['k']:.3f}$, $R^2$={hi['r2']:.3f}")
+                    txt.append(rf"high: $A$={hi['A']:.3g} $P^{{{hi['k']:.3f}}}$")
+
+                ax.set_title(rf"{name} – channel {ch}: perturbative $P^{{{n}}}$", fontsize=12)
+                ax.grid(True, which='both', alpha=0.25)
+                if xlim is not None:
+                    ax.set_xlim(xlim)
+                if ylim is not None:
+                    ax.set_ylim(ylim)
+                ax.text(0.03, 0.97, "\n".join(txt), transform=ax.transAxes, va='top',
+                        ha='left', fontsize=8.5,
+                        bbox=dict(boxstyle='round', fc='white', ec='0.7', alpha=0.9))
+                ax.legend(loc='lower right', fontsize=8, framealpha=0.9)
+                if ai == len(arms) - 1:
+                    ax.set_xlabel("Pump power (mW)")
+                ax.set_ylabel(f"{name} count rate (Hz)")
+            for ci in range(len(hs), axes.shape[1]):
+                axes[ai, ci].set_visible(False)
+        fig.suptitle("Harmonic scaling: perturbative fixed-order and free-order fits",
+                     fontsize=16, y=0.995)
+        fig.text(0.5, 0.965, self.header, ha='center', fontsize=9.5, color='#555555')
+        fig.subplots_adjust(top=0.91, hspace=0.28, wspace=0.24,
+                            left=0.06, right=0.98, bottom=0.08)
+        return fig, axes
+
     def plot_local_slope(self, ax=None, xlim=None, ylim=None):
         """Local exponent K(n) = d ln<I_n>/d ln I_0 vs power; departs from n at saturation.
 
@@ -640,6 +801,140 @@ class PowerScanAnalyzer:
         lab.append(r"classical bound ($R=1$)")
         return self._finish(fig, ax, own, r"Cauchy-Schwarz $R$ vs pump power",
                             h, lab, legend_kw=dict(ncol=2, loc='best'))
+
+    # ---------------- per-detector-pair grids vs power ----------------
+
+    def _pair_g2_vs_power(self, a_name, b_name):
+        """g^(2) vs power for an explicit detector pair (e.g. 'H3T','H4R').
+
+        Returns ``None`` if either detector is absent from the runs. Cached so the
+        grids and R-grid can share the same per-pair computation.
+        """
+        key = (a_name, b_name)
+        cache = getattr(self, "_pair_cache", None)
+        if cache is None:
+            cache = self._pair_cache = {}
+        if key in cache:
+            return cache[key]
+        vals = []
+        for r in self.runs:
+            try:
+                r.get_ch(a_name); r.get_ch(b_name)
+            except KeyError:
+                cache[key] = None
+                return None
+            vals.append(self._g2_pair(r, a_name, b_name))
+        arr = np.array(vals, dtype=float)
+        cache[key] = arr
+        return arr
+
+    def _pair_R_vs_power(self, cross, autoA, autoB):
+        """Cauchy-Schwarz R vs power for an explicit (cross, autoA, autoB) triplet."""
+        gc = self._pair_g2_vs_power(*cross)
+        ga = self._pair_g2_vs_power(*autoA)
+        gb = self._pair_g2_vs_power(*autoB)
+        if gc is None or ga is None or gb is None:
+            return None
+        with np.errstate(divide='ignore', invalid='ignore'):
+            R = gc ** 2 / (ga * gb)
+        R[~np.isfinite(R)] = np.nan
+        return R
+
+    @staticmethod
+    def _grid_ax_decor(ax, ylim, ref=1.0):
+        ax.axhline(ref, color='#313131', ls='--', lw=1.2, alpha=0.6)
+        ax.grid(True, alpha=0.25)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+
+    def plot_g2_grid_vs_power(self, ylim=None, figsize=(16, 18)):
+        """Grid of g^(2)(0) **vs pump power**, one panel per detector pair.
+
+        Row 0 holds the auto-correlations ``H_{nn}`` (R&T); the next four rows are
+        the cross pairs in each arm combination (TT, TR, RT, RR). Companion to the
+        integration-window grid, but here the x-axis is the pump power. Returns
+        ``(fig, axes)``."""
+        hs = list(self.harmonics)
+        pairs = [(hs[i], hs[j]) for i in range(len(hs)) for j in range(i + 1, len(hs))]
+        ncol = max(len(hs), len(pairs), 1)
+        fig, axes = plt.subplots(1 + len(_CROSS_ROWS), ncol,
+                                 figsize=figsize, dpi=_INTERACTIVE_DPI, squeeze=False)
+        for j in range(ncol):
+            # header row: autocorrelations
+            ax = axes[0, j]
+            if j < len(hs):
+                n = hs[j]
+                y = self._pair_g2_vs_power(f"H{n}R", f"H{n}T")
+                if y is not None:
+                    ax.plot(self.I0, y, 'o-', color=self.hcolor[n], ms=6)
+                    self._grid_ax_decor(ax, ylim)
+                    ax.set_title(rf"auto $g^{{(2)}}_{{{n}{n}}}$ (RT)", fontsize=12)
+                else:
+                    ax.set_visible(False)
+            else:
+                ax.set_visible(False)
+            # cross rows
+            for ri, row in enumerate(_CROSS_ROWS, start=1):
+                ax = axes[ri, j]
+                if j < len(pairs):
+                    m, n = pairs[j]
+                    y = self._pair_g2_vs_power(f"H{m}{row[0]}", f"H{n}{row[1]}")
+                    if y is not None:
+                        ax.plot(self.I0, y, 's-', color=self.ccolor.get((m, n), '#1f77b4'),
+                                ms=6, lw=1.6)
+                        self._grid_ax_decor(ax, ylim)
+                        ax.set_title(rf"cross $g^{{(2)}}_{{{m}{n}}}$ ({row})", fontsize=12)
+                    else:
+                        ax.set_visible(False)
+                else:
+                    ax.set_visible(False)
+        for ax in axes[-1, :]:
+            if ax.get_visible():
+                ax.set_xlabel(r"Pump power $P$ (mW)")
+        for i in range(axes.shape[0]):
+            if axes[i, 0].get_visible():
+                axes[i, 0].set_ylabel(r"$g^{(2)}(0)$")
+        fig.suptitle(r"$g^{(2)}(0)$ vs pump power — every detector pair", fontsize=18, y=0.998)
+        fig.text(0.5, 0.965, self.header, ha='center', fontsize=10, color='#555555')
+        fig.subplots_adjust(top=0.93, hspace=0.34, wspace=0.22,
+                            left=0.06, right=0.98, bottom=0.05)
+        return fig, axes
+
+    def plot_R_grid_vs_power(self, ylim=None, figsize=(16, 15)):
+        """Grid of Cauchy-Schwarz ``R`` **vs pump power**, one panel per cross pair
+        and arm combination (TT, TR, RT, RR). Returns ``(fig, axes)``."""
+        hs = list(self.harmonics)
+        pairs = [(hs[i], hs[j]) for i in range(len(hs)) for j in range(i + 1, len(hs))]
+        ncol = max(len(pairs), 1)
+        fig, axes = plt.subplots(len(_CROSS_ROWS), ncol,
+                                 figsize=figsize, dpi=_INTERACTIVE_DPI, squeeze=False)
+        for ri, row in enumerate(_CROSS_ROWS):
+            for j in range(ncol):
+                ax = axes[ri, j]
+                if j >= len(pairs):
+                    ax.set_visible(False)
+                    continue
+                m, n = pairs[j]
+                R = self._pair_R_vs_power(
+                    (f"H{m}{row[0]}", f"H{n}{row[1]}"),
+                    (f"H{m}R", f"H{m}T"), (f"H{n}R", f"H{n}T"))
+                if R is None:
+                    ax.set_visible(False)
+                    continue
+                ax.plot(self.I0, R, 's-', color=self.ccolor.get((m, n), '#1f77b4'),
+                        ms=6, lw=1.6)
+                self._grid_ax_decor(ax, ylim)
+                ax.set_title(rf"$R_{{{m}{n}}}$ ({row})", fontsize=12)
+                if ri == len(_CROSS_ROWS) - 1:
+                    ax.set_xlabel(r"Pump power $P$ (mW)")
+                if j == 0:
+                    ax.set_ylabel(r"$R$")
+        fig.suptitle(r"Cauchy-Schwarz $R$ vs pump power — every detector pair",
+                     fontsize=18, y=0.998)
+        fig.text(0.5, 0.96, self.header, ha='center', fontsize=10, color='#555555')
+        fig.subplots_adjust(top=0.92, hspace=0.34, wspace=0.22,
+                            left=0.06, right=0.98, bottom=0.06)
+        return fig, axes
 
     def plot_g2_collapse(self, ax=None, slope='local', include_cross=True, show_mean=True,
                          harmonics=None, pairs=None, xlim=None, ylim=(0, 0.015)):
