@@ -61,30 +61,37 @@ _IDEAL_GREY = '0.45'
 _INTERACTIVE_DPI = 110
 
 
-def malus_power(angle_deg, p_max, theta0=0.0, offset=0.0, factor=2.0):
+def malus_power(angle_deg, p_max, theta0=0.0, offset=0.0, factor=2.0, branch=None):
     """Pump power transmitted by a rotating wave-plate / polariser at ``angle_deg``.
 
     ``P(theta) = offset + p_max * cos^2(factor * (theta - theta0))`` (Malus' law).
 
     ``factor`` encodes the optic: use ``2`` for a half-wave plate in front of a fixed
     polariser (a 45 deg plate rotation gives a full min->max swing) and ``1`` for a
-    rotating polariser / analyser. ``angle_deg`` may be a scalar or an array.
+    rotating polariser / analyser. ``angle_deg`` may be a scalar or an array. ``branch``
+    is accepted (and ignored) so the same calibration dict can be splatted into both
+    :func:`malus_power` and :func:`malus_angle`.
     """
     a = np.deg2rad(factor * (np.asarray(angle_deg, dtype=float) - theta0))
     return offset + p_max * np.cos(a) ** 2
 
 
-def malus_angle(power, p_max, theta0=0.0, offset=0.0, factor=2.0):
+def malus_angle(power, p_max, theta0=0.0, offset=0.0, factor=2.0, branch="below"):
     """Inverse of :func:`malus_power`: the stage angle (deg) that transmits ``power``.
 
-    Returns the angle on the first monotonic branch above ``theta0`` (in
-    ``[theta0, theta0 + 90/factor]``), i.e. increasing the angle decreases the power.
+    Because ``cos^2`` is symmetric about ``theta0`` (the angle of maximum power), each
+    power maps to two angles, ``theta0 +/- delta``. ``branch`` selects which one:
+
+    * ``"below"`` (default) -> ``theta0 - delta`` (power increases with angle), the usual
+      rising side most calibrations sit on;
+    * ``"above"`` -> ``theta0 + delta`` (power decreases with angle).
+
     The requested power is clamped to the achievable ``[offset, offset + p_max]`` range.
     """
     power = np.asarray(power, dtype=float)
     frac = np.clip((power - offset) / p_max, 0.0, 1.0)
-    a = np.arccos(np.sqrt(frac))            # in [0, pi/2]
-    return theta0 + np.rad2deg(a) / factor
+    delta = np.rad2deg(np.arccos(np.sqrt(frac))) / factor   # >= 0
+    return theta0 - delta if branch == "below" else theta0 + delta
 
 
 class PowerScanAnalyzer:

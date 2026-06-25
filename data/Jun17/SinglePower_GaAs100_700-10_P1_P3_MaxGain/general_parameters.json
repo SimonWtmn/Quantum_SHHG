@@ -1,0 +1,52 @@
+{
+    "date": "2026-06-17",
+    "time": "15-55-32",
+    "experiment_type": "g2_heralded_virtual",
+    "save_dir": "C:\\Users\\QUANTUM\\OneDrive - ENSTA\\!Working files\\HBT\\HBT Data\\Tests_Jun\\2026-06-17_15-55-32_g2_heralded_virtual",
+    "material": "GaAs100_100um_P1_700_10_cover_maxGain_P3",
+    "laser": {
+        "rep_rate_hz": 18880000.0,
+        "wavelength_nm": 2100
+    },
+    "timetagging": {
+        "tt_mode": "Standard",
+        "binwidth_ps": 100,
+        "num_bins": 50000,
+        "channels": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+        ],
+        "mode_on_channel": [
+            "H3T",
+            "H3R",
+            "H4T",
+            "H4R",
+            "H5T",
+            "H5R"
+        ],
+        "deadtime": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+        ],
+        "delays": [
+            0,
+            -1000,
+            20000,
+            16500,
+            17800,
+            17300
+        ],
+        "coincidence_window": 25000,
+        "trigger": [],
+        "filter": []
+    },
+    "custom": {}
+}
