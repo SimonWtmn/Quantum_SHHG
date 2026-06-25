@@ -10,8 +10,8 @@ The glue between the engine (:mod:`src.core`) and the figure builders
 * runs the full plot suite for each observable (coherence / g^(2) / R) as the
   comparison GRID *and* every detector pair INDIVIDUALLY,
 * saves every figure to a tidy, title-driven folder
-  ``results/<date>/<title>/<observable>/`` so the same notebook can be re-run
-  for each test without manual bookkeeping,
+  ``results/<sample>/<title>/<date>/<observable>/`` so every run of the same
+  configuration stays grouped and easy to find without manual bookkeeping,
 * displays figures with the interactive ipympl backend (drag-to-zoom on any plot),
   while still writing the static PNGs to disk.
 
@@ -57,6 +57,35 @@ __all__ = [
     "discover_power_scan",
     "find_run_pkl",
 ]
+
+
+# =============================================================================
+# Folder-name helpers (results are grouped <sample>/<title>/<date>/)
+# =============================================================================
+
+def _today():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _safe(title):
+    """Turn an arbitrary label into a safe folder name."""
+    return re.sub(r"[^\w\-.+]+", "_", str(title)).strip("_")
+
+
+def _sample_of(run):
+    """Folder-safe sample name used to group results (e.g. 'CdTe110')."""
+    name = getattr(run, "sample", None) or getattr(run, "material", None) or "Unknown"
+    return _safe(name) or "Unknown"
+
+
+def _results_dir(results_root, run, title, date):
+    """Common results layout: ``<results_root>/<sample>/<title>/<date>/``.
+
+    Grouping by sample then by the descriptive title (and only then by date) keeps
+    every run of the same configuration together and easy to find, instead of
+    burying it under the acquisition date.
+    """
+    return Path(results_root) / _sample_of(run) / _safe(title) / date
 
 
 # =============================================================================
@@ -274,9 +303,8 @@ class AnalysisReport(_FigureSink):
         self.dpi = dpi
         r0 = self.runs[0]
         self.date = date or (r0.date if r0.date and r0.date != "Unknown"
-                             else datetime.now().strftime("%Y-%m-%d"))
-        safe_title = re.sub(r"[^\w\-.+]+", "_", title).strip("_")
-        self.out_dir = Path(results_root) / self.date / safe_title
+                             else _today())
+        self.out_dir = _results_dir(results_root, r0, title, self.date)
         self.visu = GridVisualizer(self.runs, comparison_variable=comparison_variable,
                                    show_details=show_details)
         # Keep figure creation from auto-displaying; we control display explicitly so
@@ -379,14 +407,6 @@ class AnalysisReport(_FigureSink):
 # Power-scan reports
 # =============================================================================
 
-def _today():
-    return datetime.now().strftime("%Y-%m-%d")
-
-
-def _safe(title):
-    return re.sub(r"[^\w\-.+]+", "_", title).strip("_")
-
-
 class PowerScanReport(_FigureSink):
     """Apply the full intensity-fluctuation model to ONE power scan and save/show
     every figure (the four model plots + a 2x2 dashboard), plus optionally the
@@ -398,7 +418,7 @@ class PowerScanReport(_FigureSink):
         The full power-scan points. A single directory is auto-expanded with
         :func:`discover_power_scan`; a list of dirs/pkls/measurements is loaded as-is.
     title : str
-        Drives ``results/<date>/<title>/`` (model plots under ``model/``).
+        Drives ``results/<sample>/<title>/<date>/`` (model plots under ``model/``).
     intensity_runs : str | Path | list, optional
         A DENSE intensity-only scan (e.g. a :class:`~src.measurement.CountrateRecorder`
         angle sweep) used only to compute a smoother ``K(n)``. A directory is expanded
@@ -425,7 +445,7 @@ class PowerScanReport(_FigureSink):
             malus=malus, k_poly_deg=k_poly_deg)
         r0 = self.runs[0]
         self.date = date or (r0.date if r0.date and r0.date != "Unknown" else _today())
-        self.out_dir = Path(results_root) / self.date / _safe(title)
+        self.out_dir = _results_dir(results_root, r0, title, self.date)
         # Re-use the comparison machinery for the coherence/g2/R grids vs power.
         self.grids = AnalysisReport(self.runs, title=title, results_root=results_root,
                                     date=self.date,
@@ -460,13 +480,21 @@ class PowerScanReport(_FigureSink):
 
     def model(self, slope="local", n_fit=None, split=None, per_channel=True,
               harmonics=None, channels=None, pairs=None, include_cross=True,
-              g2_ylim=(0.9, 1.6), collapse_ylim=(0, 0.015), overview=True, show=True):
-        """Build, save and (optionally) display the four model plots + dashboard."""
+              g2_ylim=None, r_ylim=None, collapse_ylim=(0, 0.015), overview=True,
+              show=True):
+        """Build, save and (optionally) display the model plots + dashboard.
+
+        ``g2_ylim``/``r_ylim`` default to ``None`` (auto-scale to the data) so a scan
+        whose g^(2) spans e.g. 1.3 to 9 is shown fully rather than clipped.
+        """
         d = self._mdir()
         a = self.analyzer
         fig, _ = a.plot_g2_vs_power(include_cross=include_cross, harmonics=harmonics,
                                     pairs=pairs, ylim=g2_ylim)
         self._emit(fig, d / "g2_vs_power.png", show)
+        if a.g2_cross:   # R is only defined for cross pairs (>= 2 harmonics)
+            fig, _ = a.plot_R_vs_power(harmonics=harmonics, pairs=pairs, ylim=r_ylim)
+            self._emit(fig, d / "R_vs_power.png", show)
         fig, _ = a.plot_g2_collapse(slope=slope, include_cross=include_cross,
                                     harmonics=harmonics, pairs=pairs, ylim=collapse_ylim)
         self._emit(fig, d / "collapse.png", show)
@@ -514,7 +542,7 @@ class PowerScanComparisonReport(_FigureSink):
         ``{label: scan}`` where ``scan`` is a :class:`~src.powerscan.PowerScanAnalyzer`,
         a :class:`PowerScanReport`, a scan directory, or a list of runs.
     title : str
-        Drives ``results/<date>/<title>/compare/``.
+        Drives ``results/<sample>/<title>/<date>/compare/``.
     harmonics : tuple[int], optional
         Restrict the comparison to these orders.
     **scan_kw
@@ -530,7 +558,7 @@ class PowerScanComparisonReport(_FigureSink):
         self.comp = PowerScanComparison(analyzers, harmonics=harmonics)
         r0 = next(iter(analyzers.values())).runs[0]
         self.date = date or (r0.date if r0.date and r0.date != "Unknown" else _today())
-        self.out_dir = Path(results_root) / self.date / _safe(title)
+        self.out_dir = _results_dir(results_root, r0, title, self.date)
         plt.ioff()
         print(f"PowerScanComparisonReport '{title}': {len(analyzers)} scans "
               f"({', '.join(analyzers)})")

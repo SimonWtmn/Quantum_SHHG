@@ -119,11 +119,15 @@ class HBTMeasurement:
             self.material, self.run_dir.name)
         self.filters_by_harmonic = {}
         self.filter_layout = None
+        self.filter_layout_by_harmonic = {}
+        self.polarizer_axes = {}
 
         if self.config:
-            self.polarizers, self.polarization = self._polarizers_from_config(self.config)
+            self.polarizers, self.polarization, self.polarizer_axes = (
+                self._polarizers_from_config(self.config))
             (self.filters, self.filter_label, self.filters_by_harmonic,
-             self.filter_layout) = self._filters_from_config(self.config)
+             self.filter_layout, self.filter_layout_by_harmonic) = (
+                self._filters_from_config(self.config))
         else:
             self.polarizers = pol_fallback
             self.polarization = "+".join(pol_fallback) if pol_fallback else None
@@ -172,17 +176,64 @@ class HBTMeasurement:
     # ---- structured `configuration` block (preferred) -----------------------
 
     @staticmethod
-    def _polarizers_from_config(config):
-        """(polarizers, label) from the boolean P# flags in ``configuration``.
+    def _parse_polarizer(value):
+        """Return ``(enabled, axis)`` from a polariser config entry.
 
-        e.g. {'P1': True, 'P3': False} -> (['P1'], 'P1'); both True -> 'P1+P3';
-        all present and False -> ([], 'No pol.').
+        Accepts a bool, a non-empty axis string (``"s"`` -> in on the s-axis),
+        or a dict ``{'in': True, 'axis': 'p'}``. Legacy ``P1_axis`` keys at the
+        top level of ``configuration`` are merged in by :meth:`_polarizers_from_config`.
+        """
+        if isinstance(value, bool):
+            return value, None
+        if isinstance(value, str):
+            s = value.strip()
+            if not s or s.lower() in ("false", "no", "off", "out", "0"):
+                return False, None
+            if s.lower() in ("true", "yes", "on", "in", "1"):
+                return True, None
+            return True, s
+        if isinstance(value, dict):
+            enabled = value.get("in", value.get("enabled", value.get("on", False)))
+            axis = value.get("axis")
+            ax = str(axis).strip() if axis not in (None, "") else None
+            return bool(enabled), ax
+        return bool(value), None
+
+    @staticmethod
+    def _polarizer_tag(name, axis):
+        return f"{name}({axis})" if axis else name
+
+    @classmethod
+    def _polarizers_from_config(cls, config):
+        """(polarizers, label, axes) from the P# flags in ``configuration``.
+
+        Each ``P#`` may be a bool, an axis string (``"s"`` / ``"p"`` / ``"45"`` …),
+        or ``{'in': True, 'axis': 'p'}``. An optional ``P#_axis`` key overrides /
+        supplements the axis when ``P#`` is a plain bool.
+
+        Examples
+        --------
+        ``{'P1': True, 'P3': False}`` -> ``(['P1'], 'P1', {'P1': None})``
+        ``{'P1': 's', 'P3': 'p'}``   -> ``(['P1', 'P3'], 'P1(s)+P3(p)', ...)``
+        all present and off          -> ``([], 'No pol.', {})``
         """
         flags = {k: v for k, v in config.items() if re.fullmatch(r"P\d+", str(k))}
+        axis_kw = {k[:-5]: v for k, v in config.items()
+                   if re.fullmatch(r"P\d+_axis", str(k))}
         if not flags:
-            return [], None
-        active = [k for k in sorted(flags, key=lambda s: int(s[1:])) if flags[k]]
-        return active, ("+".join(active) if active else "No pol.")
+            return [], None, {}
+        active, axes, tags = [], {}, []
+        for name in sorted(flags, key=lambda s: int(s[1:])):
+            enabled, axis = cls._parse_polarizer(flags[name])
+            if not enabled:
+                continue
+            if name in axis_kw and axis_kw[name] not in (None, ""):
+                axis = str(axis_kw[name]).strip()
+            active.append(name)
+            axes[name] = axis
+            tags.append(cls._polarizer_tag(name, axis))
+        label = "+".join(tags) if tags else "No pol."
+        return active, label, axes
 
     @staticmethod
     def _norm_filter(value):
@@ -193,35 +244,73 @@ class HBTMeasurement:
         return f"{m.group(1)}/{m.group(2)} nm" if m else s
 
     @classmethod
-    def _filters_from_config(cls, config):
-        """(filters_list, label, by_harmonic, layout) from ``configuration``.
+    def _norm_filter_layout(cls, value):
+        """Normalise a filter-layout token to ``'single'`` or ``'per-channel'``."""
+        if value is None:
+            return "single"
+        s = str(value).strip().lower().replace("_", "-")
+        if s in ("per-channel", "per-ch", "perchannel", "dual", "2", "channel"):
+            return "per-channel"
+        return "single"
 
-        ``filters`` may be a per-harmonic dict {'H3': '700-40', 'H5': '425-25'},
-        a list, or a single string. ``filter_layout`` ('per-channel' | 'single')
-        is appended to the label when present.
+    @classmethod
+    def _layout_by_harmonic(cls, layout, harmonics):
+        if isinstance(layout, dict):
+            return {h: cls._norm_filter_layout(layout.get(h, "single")) for h in harmonics}
+        norm = cls._norm_filter_layout(layout)
+        return {h: norm for h in harmonics}
+
+    @classmethod
+    def _filter_harmonic_label(cls, harmonic, filt, layout):
+        if cls._norm_filter_layout(layout) == "per-channel":
+            return f"{harmonic} {filt} per-ch"
+        return f"{harmonic} {filt}"
+
+    @classmethod
+    def _filters_from_config(cls, config):
+        """(filters_list, label, by_harmonic, layout_raw, layout_by_harmonic).
+
+        ``filters`` may be a per-harmonic dict ``{'H3': '700-40', ...}``, a list,
+        or a single string. ``filter_layout`` may be a global token (``'single'`` |
+        ``'per-channel'``) or a per-harmonic dict with the same keys as ``filters``,
+        so one harmonic can share one filter across both arms while another uses one
+        filter per arm.
         """
         raw = config.get("filters")
         layout = config.get("filter_layout")
         by_harmonic = {}
         if isinstance(raw, dict):
             by_harmonic = {h: cls._norm_filter(v) for h, v in raw.items()}
-            uniq = list(dict.fromkeys(by_harmonic.values()))
-            if len(uniq) == 1:
-                label = uniq[0]
-            else:
+            layout_map = cls._layout_by_harmonic(layout, list(by_harmonic.keys()))
+            layouts = set(layout_map.values())
+            filters_uniq = list(dict.fromkeys(by_harmonic.values()))
+            if len(filters_uniq) == 1 and len(layouts) == 1:
+                lay = layouts.pop()
+                label = (filters_uniq[0] if lay == "single"
+                         else f"{filters_uniq[0]} per-ch")
+            elif layouts == {"single"}:
                 label = ", ".join(f"{h} {v}" for h, v in by_harmonic.items())
+            else:
+                label = ", ".join(
+                    cls._filter_harmonic_label(h, v, layout_map[h])
+                    for h, v in by_harmonic.items())
             filters = list(by_harmonic.values())
+            layout_by = layout_map
         elif isinstance(raw, (list, tuple)):
             filters = [cls._norm_filter(v) for v in raw]
             label = " + ".join(filters)
+            layout_by = {}
         elif raw:
             label = cls._norm_filter(raw)
             filters = [label]
+            layout_by = {}
         else:
-            return [], None, {}, layout
-        if layout:
-            label = f"{label} ({layout})"
-        return filters, label, by_harmonic, layout
+            return [], None, {}, layout, {}
+        if not by_harmonic and layout:
+            lay = cls._norm_filter_layout(layout)
+            if lay == "per-channel":
+                label = f"{label} per-ch"
+        return filters, label, by_harmonic, layout, layout_by
 
     # =====================================================================
     # Title / legend helpers  (one consistent place; configurable verbosity)

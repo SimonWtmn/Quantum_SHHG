@@ -573,8 +573,11 @@ class PowerScanAnalyzer:
         return m in keep_h and n in keep_h
 
     def plot_g2_vs_power(self, ax=None, include_cross=False, harmonics=None, pairs=None,
-                         xlim=None, ylim=(0.9, 1.6)):
-        """g^(2)(0) vs I_0 — a family of distinct curves (one per harmonic / pair)."""
+                         xlim=None, ylim=None):
+        """g^(2)(0) vs I_0 — a family of distinct curves (one per harmonic / pair).
+
+        ``ylim`` defaults to ``None`` (auto-scale), so a scan whose g^(2) spans a wide
+        range (e.g. 1.3 to 9 across powers) is shown fully instead of being clipped."""
         fig, ax, own = self._ax(ax)
         keep_h, keep_p = self._resolve_keep(harmonics, pairs)
         for n in self.harmonics:
@@ -599,6 +602,43 @@ class PowerScanAnalyzer:
         h.append(Line2D([0], [0], color='#313131', ls='--', lw=1.3))
         lab.append(r"uncorrelated ($g^{(2)}=1$)")
         return self._finish(fig, ax, own, r"$g^{(2)}(0)$ vs pump power",
+                            h, lab, legend_kw=dict(ncol=2, loc='best'))
+
+    def R_cross(self, m, n):
+        """Cauchy-Schwarz ratio ``R = g2_mn^2 / (g2_mm * g2_nn)`` vs power for the
+        cross pair (m, n). ``R <= 1`` is the classical Cauchy-Schwarz bound; ``R > 1``
+        flags a non-classical / strongly correlated harmonic pair."""
+        gc = np.asarray(self.g2_cross[(m, n)], dtype=float)
+        ga, gb = np.asarray(self.g2_auto[m], float), np.asarray(self.g2_auto[n], float)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            R = gc ** 2 / (ga * gb)
+        R[~np.isfinite(R)] = np.nan
+        return R
+
+    def plot_R_vs_power(self, ax=None, harmonics=None, pairs=None, xlim=None, ylim=None):
+        """Cauchy-Schwarz ``R`` vs pump power, one curve per cross pair (m, n).
+
+        Companion to :meth:`plot_g2_vs_power`: where ``g^(2)`` shows the bunching of
+        each harmonic, ``R`` shows how strongly two harmonics are correlated relative
+        to the classical bound ``R=1``."""
+        fig, ax, own = self._ax(ax)
+        keep_h, keep_p = self._resolve_keep(harmonics, pairs)
+        for (m, n) in self.g2_cross:
+            if not self._keep_pair(m, n, keep_h, keep_p):
+                continue
+            ax.plot(self.I0, self.R_cross(m, n), 's-', color=self.ccolor[(m, n)],
+                    ms=7, lw=1.8, label=rf"$R_{{{m}{n}}}$")
+        ax.axhline(1.0, color='#313131', ls='--', lw=1.3, alpha=0.7)
+        ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
+        ax.set_ylabel(r"$R = g^{(2)\,2}_{mn} / (g^{(2)}_{mm}\, g^{(2)}_{nn})$")
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        h, lab = ax.get_legend_handles_labels()
+        h.append(Line2D([0], [0], color='#313131', ls='--', lw=1.3))
+        lab.append(r"classical bound ($R=1$)")
+        return self._finish(fig, ax, own, r"Cauchy-Schwarz $R$ vs pump power",
                             h, lab, legend_kw=dict(ncol=2, loc='best'))
 
     def plot_g2_collapse(self, ax=None, slope='local', include_cross=True, show_mean=True,
@@ -639,7 +679,7 @@ class PowerScanAnalyzer:
 
     def plot_overview(self, slope='local', n_fit=None, split=None, per_channel=True,
                       harmonics=None, channels=None, pairs=None,
-                      g2_ylim=(0.9, 1.6), collapse_ylim=(0, 0.015)):
+                      g2_ylim=None, collapse_ylim=(0, 0.015)):
         """2x2 dashboard mirroring the model: g^(2) vs power, the rescaled collapse, the
         intensity scaling (log-log) and the local exponent K(n). Returns (fig, axes)."""
         fig, axes = plt.subplots(2, 2, figsize=(18, 14), dpi=_INTERACTIVE_DPI)

@@ -189,7 +189,8 @@ class AcquisitionConfig:
         """Build the ``general`` parameter block (project-wide schema).
 
         ``configuration`` is the structured, per-test optical configuration
-        (polarisers in/out, filters per harmonic, filter layout, ...). Keeping it
+        (polarisers in/out — optionally with axis via ``P#_axis`` or a dict/string —
+        filters per harmonic, per-harmonic filter layout, ...). Keeping it
         separate from ``material`` means the sample tag stays clean (e.g.
         ``"CdTe110"``) while the analysis layer reads the conditions for titles and
         legends from a typed block rather than by parsing the sample string.

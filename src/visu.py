@@ -295,11 +295,16 @@ class GridVisualizer:
     # =====================================================================
 
     def plot_g2(self, c1=None, c2=None, methods=None, tau_min=0.3, tau_max=30.0,
-                step=0.6, xlim=None, ylim=(1, 3), num_side_peaks=3):
+                step=0.6, xlim=None, ylim=None, num_side_peaks=3):
         """g^(2)(0) integration-window sweep. Single pair if (c1, c2) given, else
         the 5x3 grid. ``num_side_peaks`` sets how many side peaks (each side) the
-        ``delay`` method averages as the uncorrelated reference. Returns
-        ``(fig, ax)`` / ``(fig, axes)``."""
+        ``delay`` method averages as the uncorrelated reference.
+
+        ``ylim`` defaults to ``None`` -> the y-axis auto-scales to the data of each
+        panel (with a small headroom), so a strongly bunched run (g^(2)~5) and a
+        weakly bunched one (g^(2)~1.3) are both shown fully instead of being clipped
+        by a fixed window. Pass an explicit ``(lo, hi)`` to force a fixed range.
+        Returns ``(fig, ax)`` / ``(fig, axes)``."""
         if methods is None:
             methods = ["direct"]
         tau_in_ns = np.arange(tau_min, tau_max, step)
@@ -342,7 +347,7 @@ class GridVisualizer:
         return fig, axes
 
     def _fill_ax_g2(self, ax, ch1_ref, ch2_ref, tau_in_ns, methods, xlim=None,
-                    ylim=(1, 3), num_side_peaks=3):
+                    ylim=None, num_side_peaks=3):
         max_y = 2.5
         has_data = False
         for run_idx, run in enumerate(self.runs):
@@ -364,7 +369,7 @@ class GridVisualizer:
                 valid = [v for v in vals if not np.isnan(v)]
                 if valid:
                     has_data = True
-                    max_y = min(max(max_y, max(valid) * 1.1), 4.5)
+                    max_y = min(max(max_y, max(valid) * 1.15), 10.0)
                 color = (self.method_colors.get(method, "#333333")
                          if not self.is_comparison
                          else self.run_colors[run_idx % len(self.run_colors)])
@@ -379,8 +384,9 @@ class GridVisualizer:
         if not has_data:
             return
         final_max_y = max(1.2, max_y)
-        if ylim is not None:
-            ax.set_ylim(ylim)
+        # ylim=None -> auto-scale to the data (with headroom) so both weakly and
+        # strongly bunched runs are shown fully; otherwise honour the fixed range.
+        ax.set_ylim(ylim if ylim is not None else (0.8, final_max_y))
         ax.set_xlim(xlim if xlim is not None else (tau_in_ns[0], tau_in_ns[-1]))
         ax.axhspan(0, 1, color="#2ecc71", alpha=0.05)
         ax.axhspan(1, 2, color="#f1c40f", alpha=0.05)
@@ -399,10 +405,14 @@ class GridVisualizer:
 
     def plot_R(self, cross_pair=None, auto_pair_1=None, auto_pair_2=None,
                methods=None, tau_min=0.3, tau_max=30.0, step=0.6, xlim=None,
-               ylim=(0.8, 1.2), num_side_peaks=3):
+               ylim=None, num_side_peaks=3):
         """Cauchy-Schwarz R integration-window sweep. Single R if the three pairs
         are given, else the 4x3 cross grid. ``num_side_peaks`` is forwarded to the
-        ``delay`` g^(2). Returns ``(fig, ax)`` / ``(fig, axes)``."""
+        ``delay`` g^(2).
+
+        ``ylim`` defaults to ``None`` -> the y-axis auto-scales to the data (always
+        keeping the R=1 reference in view), instead of a fixed window that may clip.
+        Returns ``(fig, ax)`` / ``(fig, axes)``."""
         if methods is None:
             methods = ["direct"]
         tau_in_ns = np.arange(tau_min, tau_max, step)
@@ -441,8 +451,9 @@ class GridVisualizer:
         return fig, axes
 
     def _fill_ax_R(self, ax, cross_ref, autoA_ref, autoB_ref, tau_in_ns, methods,
-                   xlim=None, ylim=(0.8, 1.2), num_side_peaks=3):
+                   xlim=None, ylim=None, num_side_peaks=3):
         has_data = False
+        all_R = []
         for run_idx, run in enumerate(self.runs):
             try:
                 autoA = (run.get_ch(self.runs[0].channel_map[autoA_ref[0]]),
@@ -469,8 +480,10 @@ class GridVisualizer:
                         aA = run.compute_g2_direct(autoA[0], autoA[1], tau)
                         aB = run.compute_g2_direct(autoB[0], autoB[1], tau)
                     R_vals.append(run.compute_R_parameter(c, aA, aB))
-                if any(not np.isnan(r) for r in R_vals):
+                finite = [r for r in R_vals if not np.isnan(r)]
+                if finite:
                     has_data = True
+                    all_R.extend(finite)
                 color = (self.method_colors.get(method, "#333333")
                          if not self.is_comparison
                          else self.run_colors[run_idx % len(self.run_colors)])
@@ -489,5 +502,10 @@ class GridVisualizer:
         ax.axhspan(1, 100, color="#dd76b4", alpha=0.15)
         if ylim is not None:
             ax.set_ylim(ylim)
+        elif all_R:
+            # auto-scale with headroom, always keeping the R=1 reference visible
+            lo = min(0.95, min(all_R) * 0.97)
+            hi = max(1.05, max(all_R) * 1.05)
+            ax.set_ylim(lo, hi)
         ax.set_xlim(xlim if xlim is not None else (tau_in_ns[0], tau_in_ns[-1]))
         ax.grid(True, alpha=0.3)
