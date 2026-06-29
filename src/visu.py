@@ -48,6 +48,18 @@ CROSS_ROWS = ["TT", "TR", "RT", "RR"]
 CROSS_COLS = [("3", "4"), ("3", "5"), ("4", "5")]
 AUTO_COLS = ["3", "4", "5"]
 
+# On-screen width budget (px) for inline figures: an interactive ipympl canvas is drawn at
+# its native size (width_in x dpi) and a too-wide one is cropped by the notebook renderer,
+# so we BUILD each figure at a dpi that keeps it within this budget -> it fits and stays
+# fully interactive. Saved PNGs are unaffected (report.savefig uses its own high dpi).
+_FIT_WIDTH_PX = 820
+
+
+def _fit_dpi(width_in, default=110.0):
+    """A render dpi so a ``width_in``-inch figure is at most ``_FIT_WIDTH_PX`` px wide on
+    screen (never upscales past ``default``)."""
+    return max(18.0, min(float(default), _FIT_WIDTH_PX / max(float(width_in), 0.1)))
+
 
 class GridVisualizer:
     """Render coherence / g^(2) / R as single plots or full comparison grids.
@@ -252,7 +264,7 @@ class GridVisualizer:
         ylabel = self._coh_ylabel(normalize)
 
         if c1 is not None and c2 is not None:
-            fig, ax = plt.subplots(figsize=(8, 5), dpi=200)
+            fig, ax = plt.subplots(figsize=(8, 5), dpi=_fit_dpi(8))
             phys_name = self.runs[0]._get_physical_name(c1, c2)
             self._draw_coh(ax, c1, c2, x_bounds, normalize,
                            integration_window_ns, logy, ylim)
@@ -262,7 +274,7 @@ class GridVisualizer:
                 fig, ax, rf"Coherence Spectrum ({self.histogram_source}): {phys_name}")
             return fig, ax
 
-        fig, axes = plt.subplots(5, 3, figsize=(18, 20), dpi=100)
+        fig, axes = plt.subplots(5, 3, figsize=(18, 20), dpi=_fit_dpi(18))
         for i in range(5):
             for j in range(3):
                 ax = axes[i, j]
@@ -310,7 +322,7 @@ class GridVisualizer:
         tau_in_ns = np.arange(tau_min, tau_max, step)
 
         if c1 is not None and c2 is not None:
-            fig, ax = plt.subplots(figsize=(8, 5), dpi=200)
+            fig, ax = plt.subplots(figsize=(8, 5), dpi=_fit_dpi(8))
             phys_name = self.runs[0]._get_physical_name(c1, c2)
             self._fill_ax_g2(ax, c1, c2, tau_in_ns, methods, xlim=xlim, ylim=ylim,
                              num_side_peaks=num_side_peaks)
@@ -319,7 +331,7 @@ class GridVisualizer:
             self._decorate_single(fig, ax, rf"$g^{{(2)}}$ Integration Sweep: {phys_name}")
             return fig, ax
 
-        fig, axes = plt.subplots(5, 3, figsize=(18, 20), dpi=100)
+        fig, axes = plt.subplots(5, 3, figsize=(18, 20), dpi=_fit_dpi(18))
         for i in range(5):
             for j in range(3):
                 ax = axes[i, j]
@@ -418,7 +430,7 @@ class GridVisualizer:
         tau_in_ns = np.arange(tau_min, tau_max, step)
 
         if cross_pair is not None and auto_pair_1 is not None and auto_pair_2 is not None:
-            fig, ax = plt.subplots(figsize=(8, 5), dpi=200)
+            fig, ax = plt.subplots(figsize=(8, 5), dpi=_fit_dpi(8))
             phys_name = self.runs[0]._get_physical_name(cross_pair[0], cross_pair[1])
             self._fill_ax_R(ax, cross_pair, auto_pair_1, auto_pair_2, tau_in_ns,
                             methods, xlim=xlim, ylim=ylim, num_side_peaks=num_side_peaks)
@@ -427,7 +439,7 @@ class GridVisualizer:
             self._decorate_single(fig, ax, rf"Cauchy-Schwarz $R$ Sweep: {phys_name}")
             return fig, ax
 
-        fig, axes = plt.subplots(4, 3, figsize=(18, 16), dpi=100)
+        fig, axes = plt.subplots(4, 3, figsize=(18, 16), dpi=_fit_dpi(18))
         for i, row in enumerate(CROSS_ROWS):
             for j, (hA, hB) in enumerate(CROSS_COLS):
                 ax = axes[i, j]

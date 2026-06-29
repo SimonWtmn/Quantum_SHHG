@@ -10,8 +10,8 @@ The glue between the engine (:mod:`src.core`) and the figure builders
 * runs the full plot suite for each observable (coherence / g^(2) / R) as the
   comparison GRID *and* every detector pair INDIVIDUALLY,
 * saves every figure to a tidy, title-driven folder
-  ``results/<sample>/<title>/<date>/<observable>/`` so every run of the same
-  configuration stays grouped and easy to find without manual bookkeeping,
+  ``results/<sample>/<title>/<date>/`` (flat PNG names for power scans; optional
+  per-observable subfolders for single-run reports),
 * displays figures with the interactive ipympl backend (drag-to-zoom on any plot),
   while still writing the static PNGs to disk.
 
@@ -255,47 +255,102 @@ def _R_triplets():
 # =============================================================================
 
 class _FigureSink:
-    """Mixin giving a report the ``_emit`` / `_display` machinery: save a figure as
-    a PNG and/or show it with the interactive ipympl backend (drag-to-zoom), capping
-    the on-screen size so large grids/dashboards stay readable in the notebook."""
+    """Mixin giving a report the ``_emit`` / ``_display`` machinery: save a figure as
+    a PNG and show it in the notebook.
 
-    dpi = 200
-    # Target on-screen width (pixels) for interactive figures; an ipympl canvas is
-    # sized by inches x dpi, so we cap the *display* dpi to keep large figures on
-    # screen. Saved PNGs are unaffected (savefig uses self.dpi).
-    DISPLAY_MAX_WIDTH_PX = 980
+    Two display modes, chosen automatically:
 
-    def _emit(self, fig, save_path, show):
+    * **interactive** (``interactive=True`` *and* the ipympl ``widget`` backend is
+      active): the live figure is shown as an ipympl canvas with its pan/zoom/home
+      toolbar. To avoid the old breakage (large grids squashed into a tiny canvas)
+      only the on-screen *width* is capped — the height follows from the aspect
+      ratio, so a tall grid stays tall and readable instead of being crushed.
+    * **static** (anything else): a crisp inline PNG rendered straight from the
+      figure, always at the true layout and capped to a readable width. Works under
+      any backend (``inline``, ``Agg``) and is the safe fallback if ipympl hiccups.
+
+    Set ``rep.interactive = False`` to force static even under the widget backend."""
+
+    dpi = 200            # save resolution for the on-disk PNG
+    display_dpi = 130     # on-screen render resolution for the static PNG
+    interactive = True    # show live ipympl widgets when the widget backend is active
+    DISPLAY_MAX_WIDTH_PX = 820   # cap on-screen WIDTH; height follows (aspect preserved)
+
+    def _emit(self, fig, save_path, show, dpi=None):
         if save_path is not None:
             Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            fig.savefig(save_path, dpi=self.dpi, bbox_inches="tight", facecolor="white")
+            fig.savefig(save_path, dpi=dpi or self.dpi, bbox_inches="tight",
+                        facecolor="white")
         if show:
             self._display(fig)
         else:
             plt.close(fig)
 
     def _display(self, fig):
+        """Show ``fig`` as a live, zoomable ipympl widget (drag to pan, scroll / box to
+        zoom) — for EVERY figure, grids included.
+
+        Hard-won lesson: the ipympl ``<canvas>`` is drawn at the figure's native pixel
+        size (``width_in x dpi``) and the notebook renderer (VS Code / Cursor) CROPS it
+        when that is wider than the output area — it cannot be shrunk reliably after the
+        fact. The fix is upstream: the figure builders now create every figure at a dpi
+        that keeps its native width within the on-screen budget (see ``_fit_dpi`` in
+        ``visu``/``powerscan``), so the whole figure fits and stays interactive. The
+        static-PNG branch below is only a safety net (non-widget backend, an unusually
+        wide custom figure, or any ipympl hiccup) and never clips either."""
+        canvas = getattr(fig, "canvas", None)
+        mod = canvas.__class__.__module__ if canvas is not None else ""
+        is_widget = self.interactive and ("ipympl" in mod or "nbagg" in mod)
+        if is_widget and self._fits_as_widget(fig):
+            try:
+                self._display_interactive(fig, canvas)
+                return
+            except Exception:              # noqa: BLE001 - any ipympl hiccup -> static
+                pass
+        self._display_static(fig)          # wide figures (and the inline backend) -> no clipping
+
+    def _fits_as_widget(self, fig):
+        """True when the figure's native width fits the output area, so the ipympl
+        widget can show it whole (no cropping). The figure builders already size every
+        figure to this budget (see ``_fit_dpi``), so this is normally always True; the
+        small tolerance absorbs rounding so a fit-sized figure never slips to static."""
+        w_in = float(fig.get_size_inches()[0]) or 6.5
+        return (w_in * fig.get_dpi()) <= self.DISPLAY_MAX_WIDTH_PX + 8
+
+    def _display_interactive(self, fig, canvas):
+        """Show the live, zoomable ipympl canvas. Only called for figures that already
+        fit the output area (see :meth:`_fits_as_widget`), so no resizing is needed —
+        we just tidy the chrome and display it. Drag to pan, scroll / box to zoom."""
+        from IPython.display import display
+        # cosmetic traits set defensively: a name missing on this ipympl version must not
+        # abort the interactive display (it would fall back to a static PNG otherwise).
+        for attr, val in (("header_visible", False), ("footer_visible", False),
+                          ("toolbar_visible", True), ("resizable", False)):
+            try:
+                setattr(canvas, attr, val)
+            except Exception:              # noqa: BLE001
+                pass
+        fig.canvas.draw_idle()
+        display(canvas)                    # figure stays open so it remains interactive
+
+    def _display_static(self, fig):
+        """Show ``fig`` as a crisp static PNG at its true aspect ratio, then close it."""
         try:
-            from IPython.display import display
-            canvas = getattr(fig, "canvas", None)
-            mod = canvas.__class__.__module__ if canvas is not None else ""
-            if "ipympl" in mod or "backend_nbagg" in mod:
-                w_in = fig.get_size_inches()[0]
-                if w_in > 0:
-                    fig.set_dpi(min(fig.get_dpi(), self.DISPLAY_MAX_WIDTH_PX / w_in))
-                try:
-                    canvas.header_visible = False
-                    canvas.footer_visible = False
-                    canvas.resizable = False
-                    canvas.layout.width = "100%"
-                    canvas.layout.height = "auto"
-                except Exception:          # noqa: BLE001
-                    pass
-                display(canvas)            # interactive (drag-to-zoom)
-            else:
-                display(fig)               # inline / static fallback
-        except Exception:                  # noqa: BLE001
-            plt.show()
+            from io import BytesIO
+            from IPython.display import Image, display
+            w_in = float(fig.get_size_inches()[0]) or 1.0
+            buf = BytesIO()
+            fig.savefig(buf, format="png", dpi=self.display_dpi,
+                        bbox_inches="tight", facecolor="white")
+            width_px = int(min(w_in * self.display_dpi, self.DISPLAY_MAX_WIDTH_PX))
+            display(Image(data=buf.getvalue(), width=width_px))
+        except Exception:                  # noqa: BLE001 - e.g. running outside IPython
+            try:
+                plt.show()
+            except Exception:              # noqa: BLE001
+                pass
+        finally:
+            plt.close(fig)
 
 
 # =============================================================================
@@ -327,10 +382,12 @@ class AnalysisReport(_FigureSink):
     OBSERVABLES = ("coherence", "g2", "R")
 
     def __init__(self, runs, title, results_root="results", date=None,
-                 comparison_variable=None, show_details=False, dpi=200):
+                 comparison_variable=None, show_details=False, dpi=200,
+                 flat_output=False):
         self.runs = self._load(runs)
         self.title = title
         self.dpi = dpi
+        self.flat_output = flat_output
         r0 = self.runs[0]
         self.date = date or (r0.date if r0.date and r0.date != "Unknown"
                              else _today())
@@ -358,6 +415,37 @@ class AnalysisReport(_FigureSink):
 
     # -- IO / display ---------------------------------------------------------
 
+    def _figure_path(self, observable, name):
+        """Destination PNG for one figure (flat or per-observable subfolder)."""
+        if self.flat_output:
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            stem = f"{observable}_spectra_grid" if name == "grid" else f"{observable}_{name}"
+            return self.out_dir / f"{stem}.png"
+        d = self.out_dir / observable
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{name}.png"
+
+    def _fig(self, name):
+        """Flat ``<name>.png`` path in the study folder (requires ``flat_output=True``)."""
+        if not self.flat_output:
+            raise ValueError("AnalysisReport.save() requires flat_output=True "
+                             "(pass flat_output=True to __init__).")
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        return self.out_dir / f"{name}.png"
+
+    def save(self, fig, name, show=True, dpi=None):
+        """Save a single figure as ``<name>.png`` in the study folder and (optionally)
+        display it. Lets a notebook drive ONE plot per cell with full control over
+        that plot's arguments, e.g.::
+
+            fig, _ = rep.visu.plot_g2(ch_a, ch_b, methods=['delay'], ylim=(0.9, 3))
+            rep.save(fig, 'g2_H3T_H3R', dpi=300)
+
+        Requires ``flat_output=True``. Returns ``None`` on purpose so the interactive
+        backend doesn't render a second, static copy."""
+        self._emit(fig, self._fig(name), show, dpi=dpi)
+        return None
+
     def _dir(self, observable):
         d = self.out_dir / observable
         d.mkdir(parents=True, exist_ok=True)
@@ -373,39 +461,36 @@ class AnalysisReport(_FigureSink):
 
     def coherence(self, grid=True, singles=True, show_grid=True, show_singles=False,
                   **kw):
-        """Coherence spectra: grid + every pair, all saved under coherence/."""
-        d = self._dir("coherence")
+        """Coherence spectra: grid + every pair."""
         if grid:
             fig, _ = self.visu.plot_coherence(**kw)
-            self._emit(fig, d / "grid.png", show_grid)
+            self._emit(fig, self._figure_path("coherence", "grid"), show_grid)
         if singles:
             for name, a, b in _coherence_pairs():
                 if not self._has_dets((a, b)):
                     continue
                 fig, _ = self.visu.plot_coherence(self._ch(a), self._ch(b), **kw)
-                self._emit(fig, d / f"{name}.png", show_singles)
-        print(f"  coherence -> {d}")
+                self._emit(fig, self._figure_path("coherence", name), show_singles)
+        print(f"  coherence -> {self.out_dir}")
 
     def g2(self, grid=True, singles=True, show_grid=True, show_singles=False, **kw):
-        """g^(2)(0) sweeps: grid + every pair, all saved under g2/."""
-        d = self._dir("g2")
+        """g^(2)(0) sweeps: grid + every pair."""
         if grid:
             fig, _ = self.visu.plot_g2(**kw)
-            self._emit(fig, d / "grid.png", show_grid)
+            self._emit(fig, self._figure_path("g2", "grid"), show_grid)
         if singles:
             for name, a, b in _coherence_pairs():
                 if not self._has_dets((a, b)):
                     continue
                 fig, _ = self.visu.plot_g2(self._ch(a), self._ch(b), **kw)
-                self._emit(fig, d / f"{name}.png", show_singles)
-        print(f"  g2        -> {d}")
+                self._emit(fig, self._figure_path("g2", name), show_singles)
+        print(f"  g2        -> {self.out_dir}")
 
     def R(self, grid=True, singles=True, show_grid=True, show_singles=False, **kw):
-        """Cauchy-Schwarz R sweeps: grid + every cross triplet, saved under R/."""
-        d = self._dir("R")
+        """Cauchy-Schwarz R sweeps: grid + every cross triplet."""
         if grid:
             fig, _ = self.visu.plot_R(**kw)
-            self._emit(fig, d / "grid.png", show_grid)
+            self._emit(fig, self._figure_path("R", "grid"), show_grid)
         if singles:
             for name, cross, aA, aB in _R_triplets():
                 if not self._has_dets(cross + aA + aB):
@@ -414,8 +499,8 @@ class AnalysisReport(_FigureSink):
                     cross_pair=(self._ch(cross[0]), self._ch(cross[1])),
                     auto_pair_1=(self._ch(aA[0]), self._ch(aA[1])),
                     auto_pair_2=(self._ch(aB[0]), self._ch(aB[1])), **kw)
-                self._emit(fig, d / f"{name}.png", show_singles)
-        print(f"  R         -> {d}")
+                self._emit(fig, self._figure_path("R", name), show_singles)
+        print(f"  R         -> {self.out_dir}")
 
     def run_all(self, coherence=None, g2=None, R=None, grid=True, singles=True,
                 show_grid=True, show_singles=False):
@@ -448,7 +533,8 @@ class PowerScanReport(_FigureSink):
         The full power-scan points. A single directory is auto-expanded with
         :func:`discover_power_scan`; a list of dirs/pkls/measurements is loaded as-is.
     title : str
-        Drives ``results/<sample>/<title>/<date>/`` (model plots under ``model/``).
+        Drives ``results/<sample>/<title>/<date>/`` — every PNG for this scan lives
+        in that single folder (no ``model/``, ``g2/``, … subfolders).
     intensity_runs : str | Path | list, optional
         A DENSE intensity-only scan (e.g. a :class:`~src.measurement.CountrateRecorder`
         angle sweep) used only to compute a smoother ``K(n)``. A directory is expanded
@@ -479,7 +565,8 @@ class PowerScanReport(_FigureSink):
         # Re-use the comparison machinery for the coherence/g2/R grids vs power.
         self.grids = AnalysisReport(self.runs, title=title, results_root=results_root,
                                     date=self.date,
-                                    comparison_variable=comparison_variable, dpi=dpi)
+                                    comparison_variable=comparison_variable, dpi=dpi,
+                                    flat_output=True)
         plt.ioff()
         dense = (f", dense K(n) on {len(self.intensity_runs)} pts"
                  if self.analyzer.has_dense else "")
@@ -503,64 +590,67 @@ class PowerScanReport(_FigureSink):
         """Print the per-power table of I_0, <I_n>, K(n), g^(2) and the collapse."""
         self.analyzer.summary_table()
 
-    def _mdir(self):
-        d = self.out_dir / "model"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+    def _fig(self, name):
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        return self.out_dir / f"{name}.png"
 
-    def save(self, fig, name, show=True):
-        """Save a single model figure under ``model/<name>.png`` and (optionally)
+    def save(self, fig, name, show=True, dpi=None):
+        """Save a single figure as ``<name>.png`` in the scan folder and (optionally)
         display it. Lets a notebook drive ONE plot per line with full control over
         that plot's arguments, e.g.::
 
             fig, _ = rep.analyzer.plot_g2_vs_power(harmonics=(3, 5), ylim=(0.9, 3))
             rep.save(fig, "g2_vs_power")
+
+        ``dpi`` overrides the save resolution for this one figure. Returns ``None``
+        on purpose: the figure is already shown via the interactive backend, so
+        returning it would make the notebook also render a second, static copy.
         """
-        self._emit(fig, self._mdir() / f"{name}.png", show)
-        return fig
+        self._emit(fig, self._fig(name), show, dpi=dpi)
+        return None
 
     def model(self, slope="local", n_fit=None, split=None, per_channel=True,
               harmonics=None, channels=None, pairs=None, include_cross=True,
               g2_ylim=None, r_ylim=None, collapse_ylim=(0, 0.015),
               grid_g2_ylim=None, grid_r_ylim=None, grids=True, intensity_grid=True,
-              overview=True, show=True):
+              overview=True, show=True, dpi=None):
         """Build, save and (optionally) display the model plots + dashboard.
 
         ``g2_ylim``/``r_ylim`` default to ``None`` (auto-scale to the data) so a scan
-        whose g^(2) spans e.g. 1.3 to 9 is shown fully rather than clipped.
+        whose g^(2) spans e.g. 1.3 to 9 is shown fully rather than clipped. ``dpi``
+        overrides the save resolution of every figure in the suite.
         """
-        d = self._mdir()
         a = self.analyzer
         fig, _ = a.plot_g2_vs_power(include_cross=include_cross, harmonics=harmonics,
                                     pairs=pairs, ylim=g2_ylim)
-        self._emit(fig, d / "g2_vs_power.png", show)
+        self._emit(fig, self._fig("g2_vs_power"), show, dpi=dpi)
         if a.g2_cross:   # R is only defined for cross pairs (>= 2 harmonics)
             fig, _ = a.plot_R_vs_power(harmonics=harmonics, pairs=pairs, ylim=r_ylim)
-            self._emit(fig, d / "R_vs_power.png", show)
+            self._emit(fig, self._fig("R_vs_power"), show, dpi=dpi)
         if grids:        # per-detector-pair grids vs power (TT/TR/RT/RR)
             fig, _ = a.plot_g2_grid_vs_power(ylim=grid_g2_ylim)
-            self._emit(fig, d / "g2_grid_vs_power.png", show)
+            self._emit(fig, self._fig("g2_grid_vs_power"), show, dpi=dpi)
             if a.g2_cross:
                 fig, _ = a.plot_R_grid_vs_power(ylim=grid_r_ylim)
-                self._emit(fig, d / "R_grid_vs_power.png", show)
+                self._emit(fig, self._fig("R_grid_vs_power"), show, dpi=dpi)
         fig, _ = a.plot_g2_collapse(slope=slope, include_cross=include_cross,
                                     harmonics=harmonics, pairs=pairs, ylim=collapse_ylim)
-        self._emit(fig, d / "collapse.png", show)
+        self._emit(fig, self._fig("collapse"), show, dpi=dpi)
         fig, _ = a.plot_intensity_scaling(n_fit=n_fit, split=split, per_channel=per_channel,
                                           harmonics=harmonics, channels=channels)
-        self._emit(fig, d / "intensity_scaling.png", show)
+        self._emit(fig, self._fig("intensity_scaling"), show, dpi=dpi)
         if intensity_grid:
             fig, _ = a.plot_intensity_grid(harmonics=harmonics, channels=channels)
-            self._emit(fig, d / "intensity_grid.png", show)
+            self._emit(fig, self._fig("intensity_grid"), show, dpi=dpi)
         fig, _ = a.plot_local_slope()
-        self._emit(fig, d / "local_slope.png", show)
+        self._emit(fig, self._fig("local_slope"), show, dpi=dpi)
         if overview:
             fig, _ = a.plot_overview(slope=slope, n_fit=n_fit, split=split,
                                      per_channel=per_channel, harmonics=harmonics,
                                      channels=channels, pairs=pairs,
                                      g2_ylim=g2_ylim, collapse_ylim=collapse_ylim)
-            self._emit(fig, d / "overview.png", show)
-        print(f"  model -> {d}")
+            self._emit(fig, self._fig("overview"), show, dpi=dpi)
+        print(f"  figures -> {self.out_dir}")
 
     def correlations(self, coherence=None, g2=None, R=None, singles=False,
                      show_grid=True):
@@ -593,7 +683,9 @@ class PowerScanComparisonReport(_FigureSink):
         ``{label: scan}`` where ``scan`` is a :class:`~src.powerscan.PowerScanAnalyzer`,
         a :class:`PowerScanReport`, a scan directory, or a list of runs.
     title : str
-        Drives ``results/<sample>/<title>/<date>/compare/``.
+        Drives ``results/<sample>/<title>/<date>/`` — every comparison PNG lives in
+        that single folder (no ``compare/`` subfolder), mirroring the single-scan
+        :class:`PowerScanReport` layout.
     harmonics : tuple[int], optional
         Restrict the comparison to these orders.
     **scan_kw
@@ -624,26 +716,52 @@ class PowerScanComparisonReport(_FigureSink):
         runs = PowerScanReport._expand(value)
         return PowerScanAnalyzer(runs, **scan_kw)
 
-    def _cdir(self):
-        d = self.out_dir / "compare"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+    def _fig(self, name):
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        return self.out_dir / f"{name}.png"
+
+    def save(self, fig, name, show=True, dpi=None):
+        """Save a single comparison figure as ``<name>.png`` in the study folder and
+        (optionally) display it. Lets a notebook drive ONE plot per line with full
+        control over that plot's arguments (``dpi``, ``ylim``, ...), exactly like
+        :meth:`PowerScanReport.save`::
+
+            fig, _ = rep.comp.plot_g2_vs_power(harmonics=(3, 5), ylim=(0.9, 1.6))
+            rep.save(fig, "g2_vs_power", dpi=300)
+
+        ``dpi`` overrides the save resolution for this one figure. Returns ``None`` on
+        purpose so the interactive backend doesn't render a second, static copy.
+        """
+        self._emit(fig, self._fig(name), show, dpi=dpi)
+        return None
 
     def plots(self, harmonics=None, slope="local", g2_ylim=(0.9, 1.6),
-              sigma2_ylim=None, overview=True, show=True):
-        """Build, save and (optionally) display all comparison figures."""
-        d = self._cdir()
+              r_ylim=None, sigma2_ylim=None, grid_g2_ylim=None, grid_r_ylim=None,
+              grids=True, overview=True, show=True):
+        """Build, save and (optionally) display all comparison figures (flat in
+        ``out_dir``, descriptive ``<name>.png`` names).
+
+        ``grids=True`` also saves the per-detector-pair g^(2) and R grids vs power,
+        overlaying every scan (one panel per pair) so each pair can be compared across
+        scans at a glance."""
         c = self.comp
         fig, _ = c.plot_g2_vs_power(harmonics=harmonics, ylim=g2_ylim)
-        self._emit(fig, d / "g2_vs_power.png", show)
+        self._emit(fig, self._fig("g2_vs_power"), show)
         fig, _ = c.plot_inferred_sigma2(slope=slope, harmonics=harmonics, ylim=sigma2_ylim)
-        self._emit(fig, d / "inferred_sigma2.png", show)
+        self._emit(fig, self._fig("inferred_sigma2"), show)
+        if grids:
+            fig, _ = c.plot_g2_grid_vs_power(harmonics=harmonics, ylim=grid_g2_ylim)
+            self._emit(fig, self._fig("g2_grid_vs_power"), show)
+            fig, _ = c.plot_R_vs_power(harmonics=harmonics, ylim=r_ylim)
+            self._emit(fig, self._fig("R_vs_power"), show)
+            fig, _ = c.plot_R_grid_vs_power(harmonics=harmonics, ylim=grid_r_ylim)
+            self._emit(fig, self._fig("R_grid_vs_power"), show)
         fig, _ = c.plot_intensity_scaling(harmonics=harmonics)
-        self._emit(fig, d / "intensity_scaling.png", show)
+        self._emit(fig, self._fig("intensity_scaling"), show)
         fig, _ = c.plot_local_slope(harmonics=harmonics)
-        self._emit(fig, d / "local_slope.png", show)
+        self._emit(fig, self._fig("local_slope"), show)
         if overview:
             fig, _ = c.plot_overview(slope=slope, harmonics=harmonics,
                                      g2_ylim=g2_ylim, sigma2_ylim=sigma2_ylim)
-            self._emit(fig, d / "overview.png", show)
-        print(f"  compare -> {d}")
+            self._emit(fig, self._fig("overview"), show)
+        print(f"  figures -> {self.out_dir}")
