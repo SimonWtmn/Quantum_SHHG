@@ -61,6 +61,49 @@ _IDEAL_GREY = '0.45'
 # the data-point colour (the two used to share a hue and were hard to tell apart).
 _REF_DARK = '#222222'
 
+# When several g^(2) methods are overlaid in ONE panel (the grids vs power) the colour
+# already encodes the harmonic / pair / scan, so the method is encoded by a distinct
+# marker + line style instead. The pretty labels are reused for column titles and legends.
+_METHOD_MARKERS = {'direct': 'o', 'delay': 's', 'heralded': '^'}
+_METHOD_LINESTYLES = {'direct': '-', 'delay': '--', 'heralded': ':'}
+_METHOD_LABELS = {'direct': 'direct', 'delay': 'delay', 'heralded': 'heralded'}
+
+
+def _method_label(method):
+    """Human label for a g^(2) method (column titles / legends)."""
+    return _METHOD_LABELS.get(method, str(method)).capitalize()
+
+
+def _dry_run_ylim(plot_fn, methods, kw):
+    """The union y-range that a set of methods would autoscale to, found by drawing
+    each once on a throwaway axes. A side-by-side row with a *shared* y-axis must use
+    this union (not a per-column autoscale) or the method with the wider range gets
+    clipped — e.g. delay R sits near 1 while heralded R reaches several."""
+    fig, ax = plt.subplots()
+    los, his = [], []
+    try:
+        for m in methods:
+            ax.cla()
+            plot_fn(ax=ax, methods=[m], **kw)
+            lo, hi = ax.get_ylim()
+            if np.isfinite(lo) and np.isfinite(hi):
+                los.append(lo); his.append(hi)
+    finally:
+        plt.close(fig)
+    return (min(los), max(his)) if los else None
+
+
+def _method_style(method, idx, n_methods, base_marker='o'):
+    """``(marker, linestyle)`` for a method drawn into a shared panel.
+
+    A single method keeps the historic look (``base_marker`` + solid line); two or
+    more methods each get their own marker + line style so they stay distinguishable
+    when they share the panel colour."""
+    if n_methods <= 1:
+        return base_marker, '-'
+    return (_METHOD_MARKERS.get(method, base_marker),
+            _METHOD_LINESTYLES.get(method, ['-', '--', ':', '-.'][idx % 4]))
+
 _INTERACTIVE_DPI = 96
 # On-screen width budget (px) for a figure shown inline. The interactive ipympl canvas is
 # rendered at its NATIVE pixel size (width_in x dpi); if that is wider than the notebook
@@ -244,15 +287,51 @@ class PowerScanAnalyzer:
 
     # ---------------- data assembly ----------------
 
-    def _g2_pair(self, run, a_name, b_name):
+    def _methods(self, methods):
+        """Normalise the ``methods`` argument to a list of method names.
+
+        ``None`` -> just the analyzer's primary ``g2_method``; a single string ->
+        a one-element list; an iterable -> a list (preserving order)."""
+        if methods is None:
+            return [self.g2_method]
+        if isinstance(methods, str):
+            return [methods]
+        return list(methods)
+
+    def _g2_pair(self, run, a_name, b_name, method=None):
+        method = method or self.g2_method
         c1, c2 = run.get_ch(a_name), run.get_ch(b_name)
-        if self.g2_method == 'direct':
+        if method == 'direct':
             return run.compute_g2_direct(c1, c2)
-        if self.g2_method == 'heralded':
+        if method == 'heralded':
             return run.compute_g2_heralded(c1, c2, self.tau_in_ns)
         return run.compute_g2_delay(c1, c2, self.tau_in_ns, source=self.g2_source)
 
+    def g2_auto_of(self, n, method=None):
+        """Auto-correlation ``g^(2)_{nn}`` vs power for harmonic ``n`` and any g^(2)
+        ``method`` (cached). Defaults to the analyzer's primary ``g2_method``."""
+        method = method or self.g2_method
+        key = (method, n)
+        if key not in self._g2_auto_cache:
+            self._g2_auto_cache[key] = np.array(
+                [self._g2_pair(r, f"H{n}T", f"H{n}R", method) for r in self.runs],
+                dtype=float)
+        return self._g2_auto_cache[key]
+
+    def g2_cross_of(self, m, n, method=None):
+        """Cross-correlation ``g^(2)_{mn}`` vs power for any g^(2) ``method`` (cached)."""
+        method = method or self.g2_method
+        key = (method, m, n)
+        if key not in self._g2_cross_cache:
+            self._g2_cross_cache[key] = np.array(
+                [self._g2_pair(r, f"H{m}T", f"H{n}T", method) for r in self.runs],
+                dtype=float)
+        return self._g2_cross_cache[key]
+
     def _build(self):
+        # Per-method g^(2) caches so the same scan can be shown with several methods
+        # (e.g. delay vs heralded) without recomputing what was already drawn.
+        self._g2_auto_cache, self._g2_cross_cache = {}, {}
         self.I0 = np.array([r.pump_intensity() for r in self.runs], dtype=float)
 
         # Dense intensity scan (for K(n)) — assembled first so the exponents can use it.
@@ -293,8 +372,7 @@ class PowerScanAnalyzer:
         for n in self.harmonics:
             self.In[n] = np.array([r.harmonic_intensity(n, self.intensity)
                                    for r in self.runs], dtype=float)
-            self.g2_auto[n] = np.array(
-                [self._g2_pair(r, f"H{n}T", f"H{n}R") for r in self.runs], dtype=float)
+            self.g2_auto[n] = self.g2_auto_of(n)   # primary-method view (back-compat)
         for n in self.harmonics:
             self.K[n] = self.local_exponent_at(n, self.I0)
 
@@ -321,8 +399,7 @@ class PowerScanAnalyzer:
         self.g2_cross = {}
         for i, m in enumerate(self.harmonics):
             for n in self.harmonics[i + 1:]:
-                self.g2_cross[(m, n)] = np.array(
-                    [self._g2_pair(r, f"H{m}T", f"H{n}T") for r in self.runs], dtype=float)
+                self.g2_cross[(m, n)] = self.g2_cross_of(m, n)   # primary-method view
         self.ccolor = {pair: _CROSS_COLORS[i % len(_CROSS_COLORS)]
                        for i, pair in enumerate(self.g2_cross)}
 
@@ -433,25 +510,27 @@ class PowerScanAnalyzer:
         out['hi'] = tuple(np.polyfit(lx[b:], ly[b:], 1))
         return out
 
-    def collapse_auto(self, n, slope='local', n_fit=None):
+    def collapse_auto(self, n, slope='local', n_fit=None, method=None):
         """(g2_nn - 1) / K^2(n) for harmonic n (should equal g2_0 - 1 for every harmonic)."""
         k = self.K[n] if slope == 'local' else self.perturbative_slope(n, n_fit)[0]
-        return (self.g2_auto[n] - 1.0) / np.asarray(k) ** 2
+        return (self.g2_auto_of(n, method) - 1.0) / np.asarray(k) ** 2
 
-    def collapse_cross(self, m, n, slope='local', n_fit=None):
+    def collapse_cross(self, m, n, slope='local', n_fit=None, method=None):
         """(g2_mn - 1) / (K(m) K(n)) for a cross pair (should also equal g2_0 - 1)."""
         if slope == 'local':
             km, kn = self.K[m], self.K[n]
         else:
             km, kn = self.perturbative_slope(m, n_fit)[0], self.perturbative_slope(n, n_fit)[0]
-        return (self.g2_cross[(m, n)] - 1.0) / (np.asarray(km) * np.asarray(kn))
+        return (self.g2_cross_of(m, n, method) - 1.0) / (np.asarray(km) * np.asarray(kn))
 
-    def inferred_g2_0(self, slope='local', n_fit=None, harmonics=None, pairs=None):
+    def inferred_g2_0(self, slope='local', n_fit=None, harmonics=None, pairs=None,
+                      method=None):
         """Indirect estimate of the pump excess g2_0 - 1 = sigma^2, as the mean (and std)
         over the collapsed curves vs power."""
         keep_h, keep_p = self._resolve_keep(harmonics, pairs)
-        stack = [self.collapse_auto(n, slope, n_fit) for n in self.harmonics if n in keep_h]
-        stack += [self.collapse_cross(m, n, slope, n_fit) for (m, n) in self.g2_cross
+        stack = [self.collapse_auto(n, slope, n_fit, method)
+                 for n in self.harmonics if n in keep_h]
+        stack += [self.collapse_cross(m, n, slope, n_fit, method) for (m, n) in self.g2_cross
                   if self._keep_pair(m, n, keep_h, keep_p)]
         if not stack:
             nan = np.full(len(self.I0), np.nan)
@@ -518,6 +597,94 @@ class PowerScanAnalyzer:
             top = max(y - 0.010, 0.74)
             fig.subplots_adjust(top=top, bottom=0.12, left=0.13, right=0.96)
         return fig, ax
+
+    @staticmethod
+    def _method_legend_handles(methods):
+        """Marker / line-style key for the g^(2) methods (colour-neutral grey)."""
+        return [Line2D([0], [0], color='0.3', marker=_METHOD_MARKERS.get(m, 'o'),
+                       ls=_METHOD_LINESTYLES.get(m, '-'), ms=6, lw=1.8,
+                       label=_method_label(m))
+                for m in methods]
+
+    @staticmethod
+    def _g2_zones(ax, ylim=None):
+        """Shade the g^(2) bunching regimes (mirrors the integration-window grid):
+        green below 1 (antibunched), yellow 1-2, orange 2-4, red above 4, plus a
+        dashed reference line at 1 (and at 2 / 4 when they are in range). Locks the
+        y-range so the full-width spans can't rescale the axes."""
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        else:                                  # freeze the data autoscale first
+            ax.relim(); ax.autoscale_view()
+        lo, hi = ax.get_ylim()
+        for y0, y1, c, al in ((0, 1, "#2ecc71", 0.06), (1, 2, "#f1c40f", 0.06),
+                              (2, 4, "#e67e22", 0.08), (4, hi, "#e74c3c", 0.10)):
+            y0c, y1c = max(y0, lo), min(y1, hi)
+            if y1c > y0c:
+                ax.axhspan(y0c, y1c, color=c, alpha=al, zorder=0)
+        ax.axhline(1.0, color="#313131", ls="--", lw=1.3, alpha=0.6, zorder=1)
+        if hi > 2.0:
+            ax.axhline(2.0, color="#313131", ls="--", lw=1.0, alpha=0.4, zorder=1)
+        if hi > 4.0:
+            ax.axhline(4.0, color="#313131", ls="--", lw=1.0, alpha=0.4, zorder=1)
+        ax.set_ylim(lo, hi)
+
+    @staticmethod
+    def _R_zones(ax, ylim=None):
+        """Shade the Cauchy-Schwarz regimes (mirrors the integration-window grid):
+        purple below the classical bound ``R=1``, pink above it (non-classical), plus
+        a dashed reference line at 1."""
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        else:
+            ax.relim(); ax.autoscale_view()
+        lo, hi = ax.get_ylim()
+        if lo < 1.0:
+            ax.axhspan(lo, min(1.0, hi), color="#9b59b6", alpha=0.08, zorder=0)
+        if hi > 1.0:
+            ax.axhspan(max(1.0, lo), hi, color="#dd76b4", alpha=0.15, zorder=0)
+        ax.axhline(1.0, color="#7f8c8d", ls="--", lw=1.3, alpha=0.6, zorder=1)
+        ax.set_ylim(lo, hi)
+
+    def _row_by_method(self, plot_fn, methods, title, col_figsize=(6.5, 4.5),
+                       dpi=None, **kw):
+        """One column per g^(2) method, all sharing the y-axis, so the SAME single
+        plot is shown side-by-side for ``delay`` / ``heralded`` / ... and compared at
+        a glance. ``plot_fn`` is one of the standalone single-plot builders, called
+        once per column with ``methods=[m]`` and the shared ``ax``. The y-tick *values*
+        are kept visible on every column (only the axis label is dropped past the
+        first) so the right-hand panels stay easy to read off."""
+        ncol = len(methods)
+        w = col_figsize[0] * ncol
+        # A shared y-axis must span every method, so when no explicit ylim is given we
+        # pre-compute the union range; otherwise the per-column autoscale would clip the
+        # method with the wider spread.
+        ylim = kw.get('ylim')
+        if ylim is None:
+            ylim = _dry_run_ylim(plot_fn, methods, {**kw, 'ylim': None})
+        fig, axes = plt.subplots(1, ncol, figsize=(w, col_figsize[1]),
+                                 dpi=dpi or _fit_dpi(w), sharey=True, squeeze=False)
+        for j, m in enumerate(methods):
+            plot_fn(ax=axes[0, j], methods=[m], **{**kw, 'ylim': ylim})
+            axes[0, j].set_title(rf"{_method_label(m)} $g^{{(2)}}$", fontsize=13, pad=6)
+            axes[0, j].tick_params(labelleft=True)     # keep tick numbers on shared y
+            if j > 0:
+                axes[0, j].set_ylabel("")
+        # Title + wrapped grey metadata, placed with the SAME vertical budget as the
+        # standalone single plots (see _finish) so they never overlap; the extra gap
+        # below leaves room for the per-column method titles.
+        header_lines = self._header_text(max_chars=max(48, int(w * 9))).split("\n")
+        y = 0.975
+        fig.text(0.5, y, title, ha="center", va="top", fontsize=15,
+                 transform=fig.transFigure)
+        y -= 0.060
+        for line in header_lines:
+            fig.text(0.5, y, line, ha="center", va="top", fontsize=8.5,
+                     color="#555555", transform=fig.transFigure)
+            y -= 0.034
+        top = max(y - 0.050, 0.70)
+        fig.subplots_adjust(top=top, bottom=0.13, left=0.07, right=0.985, wspace=0.13)
+        return fig, axes
 
     def plot_intensity_scaling(self, ax=None, n_fit=None, split=None, per_channel=True,
                                harmonics=None, channels=None, show_ideal=True,
@@ -814,11 +981,22 @@ class PowerScanAnalyzer:
         return m in keep_h and n in keep_h
 
     def plot_g2_vs_power(self, ax=None, include_cross=False, harmonics=None, pairs=None,
-                         xlim=None, ylim=None, dpi=None):
+                         xlim=None, ylim=None, dpi=None, methods=None):
         """g^(2)(0) vs I_0 — a family of distinct curves (one per harmonic / pair).
 
         ``ylim`` defaults to ``None`` (auto-scale), so a scan whose g^(2) spans a wide
-        range (e.g. 1.3 to 9 across powers) is shown fully instead of being clipped."""
+        range (e.g. 1.3 to 9 across powers) is shown fully instead of being clipped.
+
+        ``methods`` accepts several g^(2) methods (e.g. ``["delay", "heralded"]``);
+        when more than one is given and no ``ax`` is supplied, the SAME plot is drawn
+        once per method, side-by-side and sharing the y-axis, to compare them."""
+        methods = self._methods(methods)
+        if len(methods) > 1 and ax is None:
+            return self._row_by_method(
+                self.plot_g2_vs_power, methods, r"$g^{(2)}$ vs pump power", dpi=dpi,
+                include_cross=include_cross, harmonics=harmonics, pairs=pairs,
+                xlim=xlim, ylim=ylim)
+        method = methods[0]
         fig, ax, own = self._ax(ax, dpi=dpi)
         if own:
             self._ylim['g2'] = ylim
@@ -826,45 +1004,55 @@ class PowerScanAnalyzer:
         for n in self.harmonics:
             if n not in keep_h:
                 continue
-            ax.plot(self.I0, self.g2_auto[n], 'o-', color=self.hcolor[n], ms=7,
+            ax.plot(self.I0, self.g2_auto_of(n, method), 'o-', color=self.hcolor[n], ms=7,
                     label=rf"$g^{{(2)}}_{{{n}{n}}}$ auto")
         if include_cross:
             for (m, n) in self.g2_cross:
                 if not self._keep_pair(m, n, keep_h, keep_p):
                     continue
-                ax.plot(self.I0, self.g2_cross[(m, n)], 's--', color=self.ccolor[(m, n)],
+                ax.plot(self.I0, self.g2_cross_of(m, n, method), 's--',
+                        color=self.ccolor[(m, n)],
                         ms=6, lw=1.6, label=rf"$g^{{(2)}}_{{{m}{n}}}$ cross")
-        ax.axhline(1.0, color='#313131', ls='--', lw=1.3, alpha=0.7)
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
-        ax.set_ylabel(r"$g^{(2)}(0)$")
+        ax.set_ylabel(r"$g^{(2)}$")
         if xlim is not None:
             ax.set_xlim(xlim)
-        if ylim is not None:
-            ax.set_ylim(ylim)
+        self._g2_zones(ax, ylim)
+        ax.grid(True, alpha=0.25)
         h, lab = ax.get_legend_handles_labels()
         h.append(Line2D([0], [0], color='#313131', ls='--', lw=1.3))
         lab.append(r"uncorrelated ($g^{(2)}=1$)")
-        return self._finish(fig, ax, own, r"$g^{(2)}(0)$ vs pump power",
+        return self._finish(fig, ax, own, r"$g^{(2)}$ vs pump power",
                             h, lab, legend_kw=dict(ncol=2, loc='best'))
 
-    def R_cross(self, m, n):
+    def R_cross(self, m, n, method=None):
         """Cauchy-Schwarz ratio ``R = g2_mn^2 / (g2_mm * g2_nn)`` vs power for the
         cross pair (m, n). ``R <= 1`` is the classical Cauchy-Schwarz bound; ``R > 1``
         flags a non-classical / strongly correlated harmonic pair."""
-        gc = np.asarray(self.g2_cross[(m, n)], dtype=float)
-        ga, gb = np.asarray(self.g2_auto[m], float), np.asarray(self.g2_auto[n], float)
+        gc = np.asarray(self.g2_cross_of(m, n, method), dtype=float)
+        ga = np.asarray(self.g2_auto_of(m, method), float)
+        gb = np.asarray(self.g2_auto_of(n, method), float)
         with np.errstate(divide='ignore', invalid='ignore'):
             R = gc ** 2 / (ga * gb)
         R[~np.isfinite(R)] = np.nan
         return R
 
     def plot_R_vs_power(self, ax=None, harmonics=None, pairs=None, xlim=None, ylim=None,
-                        dpi=None):
+                        dpi=None, methods=None):
         """Cauchy-Schwarz ``R`` vs pump power, one curve per cross pair (m, n).
 
         Companion to :meth:`plot_g2_vs_power`: where ``g^(2)`` shows the bunching of
         each harmonic, ``R`` shows how strongly two harmonics are correlated relative
-        to the classical bound ``R=1``."""
+        to the classical bound ``R=1``.
+
+        ``methods`` accepts several g^(2) methods; more than one (and no ``ax``) draws
+        the plot once per method, side-by-side and sharing the y-axis."""
+        methods = self._methods(methods)
+        if len(methods) > 1 and ax is None:
+            return self._row_by_method(
+                self.plot_R_vs_power, methods, r"Cauchy-Schwarz $R$ vs pump power",
+                dpi=dpi, harmonics=harmonics, pairs=pairs, xlim=xlim, ylim=ylim)
+        method = methods[0]
         fig, ax, own = self._ax(ax, dpi=dpi)
         if own:
             self._ylim['R'] = ylim
@@ -872,30 +1060,31 @@ class PowerScanAnalyzer:
         for (m, n) in self.g2_cross:
             if not self._keep_pair(m, n, keep_h, keep_p):
                 continue
-            ax.plot(self.I0, self.R_cross(m, n), 's-', color=self.ccolor[(m, n)],
+            ax.plot(self.I0, self.R_cross(m, n, method), 's-', color=self.ccolor[(m, n)],
                     ms=7, lw=1.8, label=rf"$R_{{{m}{n}}}$")
-        ax.axhline(1.0, color='#313131', ls='--', lw=1.3, alpha=0.7)
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
         ax.set_ylabel(r"$R = g^{(2)\,2}_{mn} / (g^{(2)}_{mm}\, g^{(2)}_{nn})$")
         if xlim is not None:
             ax.set_xlim(xlim)
-        if ylim is not None:
-            ax.set_ylim(ylim)
+        self._R_zones(ax, ylim)
+        ax.grid(True, alpha=0.25)
         h, lab = ax.get_legend_handles_labels()
-        h.append(Line2D([0], [0], color='#313131', ls='--', lw=1.3))
+        h.append(Line2D([0], [0], color='#7f8c8d', ls='--', lw=1.3))
         lab.append(r"classical bound ($R=1$)")
         return self._finish(fig, ax, own, r"Cauchy-Schwarz $R$ vs pump power",
                             h, lab, legend_kw=dict(ncol=2, loc='best'))
 
     # ---------------- per-detector-pair grids vs power ----------------
 
-    def _pair_g2_vs_power(self, a_name, b_name):
-        """g^(2) vs power for an explicit detector pair (e.g. 'H3T','H4R').
+    def _pair_g2_vs_power(self, a_name, b_name, method=None):
+        """g^(2) vs power for an explicit detector pair (e.g. 'H3T','H4R') and any
+        g^(2) ``method``.
 
-        Returns ``None`` if either detector is absent from the runs. Cached so the
-        grids and R-grid can share the same per-pair computation.
+        Returns ``None`` if either detector is absent from the runs. Cached (per
+        method) so the grids and R-grid can share the same per-pair computation.
         """
-        key = (a_name, b_name)
+        method = method or self.g2_method
+        key = (method, a_name, b_name)
         cache = getattr(self, "_pair_cache", None)
         if cache is None:
             cache = self._pair_cache = {}
@@ -908,16 +1097,16 @@ class PowerScanAnalyzer:
             except KeyError:
                 cache[key] = None
                 return None
-            vals.append(self._g2_pair(r, a_name, b_name))
+            vals.append(self._g2_pair(r, a_name, b_name, method))
         arr = np.array(vals, dtype=float)
         cache[key] = arr
         return arr
 
-    def _pair_R_vs_power(self, cross, autoA, autoB):
+    def _pair_R_vs_power(self, cross, autoA, autoB, method=None):
         """Cauchy-Schwarz R vs power for an explicit (cross, autoA, autoB) triplet."""
-        gc = self._pair_g2_vs_power(*cross)
-        ga = self._pair_g2_vs_power(*autoA)
-        gb = self._pair_g2_vs_power(*autoB)
+        gc = self._pair_g2_vs_power(*cross, method=method)
+        ga = self._pair_g2_vs_power(*autoA, method=method)
+        gb = self._pair_g2_vs_power(*autoB, method=method)
         if gc is None or ga is None or gb is None:
             return None
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -925,20 +1114,19 @@ class PowerScanAnalyzer:
         R[~np.isfinite(R)] = np.nan
         return R
 
-    @staticmethod
-    def _grid_ax_decor(ax, ylim, ref=1.0):
-        ax.axhline(ref, color='#313131', ls='--', lw=1.2, alpha=0.6)
-        ax.grid(True, alpha=0.25)
-        if ylim is not None:
-            ax.set_ylim(ylim)
-
-    def plot_g2_grid_vs_power(self, ylim=None, figsize=(16, 18), dpi=None):
+    def plot_g2_grid_vs_power(self, ylim=None, figsize=(16, 18), dpi=None, methods=None):
         """Grid of g^(2)(0) **vs pump power**, one panel per detector pair.
 
         Row 0 holds the auto-correlations ``H_{nn}`` (R&T); the next four rows are
         the cross pairs in each arm combination (TT, TR, RT, RR). Companion to the
-        integration-window grid, but here the x-axis is the pump power. Returns
-        ``(fig, axes)``."""
+        integration-window grid, but here the x-axis is the pump power.
+
+        ``methods`` accepts several g^(2) methods (e.g. ``["delay", "heralded"]``);
+        every method is overlaid in the SAME panel (colour = harmonic/pair, marker /
+        line style = method), so the two methods sit directly on top of each other.
+        Returns ``(fig, axes)``."""
+        methods = self._methods(methods)
+        nm = len(methods)
         hs = list(self.harmonics)
         pairs = [(hs[i], hs[j]) for i in range(len(hs)) for j in range(i + 1, len(hs))]
         ncol = max(len(hs), len(pairs), 1)
@@ -949,10 +1137,17 @@ class PowerScanAnalyzer:
             ax = axes[0, j]
             if j < len(hs):
                 n = hs[j]
-                y = self._pair_g2_vs_power(f"H{n}R", f"H{n}T")
-                if y is not None:
-                    ax.plot(self.I0, y, 'o-', color=self.hcolor[n], ms=6)
-                    self._grid_ax_decor(ax, ylim)
+                drew = False
+                for mi, method in enumerate(methods):
+                    y = self._pair_g2_vs_power(f"H{n}R", f"H{n}T", method)
+                    if y is None:
+                        continue
+                    mk, ls = _method_style(method, mi, nm, base_marker='o')
+                    ax.plot(self.I0, y, marker=mk, ls=ls, color=self.hcolor[n], ms=6, lw=1.6)
+                    drew = True
+                if drew:
+                    ax.grid(True, alpha=0.25)
+                    self._g2_zones(ax, ylim)
                     ax.set_title(rf"auto $g^{{(2)}}_{{{n}{n}}}$ (RT)", fontsize=12)
                 else:
                     ax.set_visible(False)
@@ -963,11 +1158,18 @@ class PowerScanAnalyzer:
                 ax = axes[ri, j]
                 if j < len(pairs):
                     m, n = pairs[j]
-                    y = self._pair_g2_vs_power(f"H{m}{row[0]}", f"H{n}{row[1]}")
-                    if y is not None:
-                        ax.plot(self.I0, y, 's-', color=self.ccolor.get((m, n), '#1f77b4'),
-                                ms=6, lw=1.6)
-                        self._grid_ax_decor(ax, ylim)
+                    drew = False
+                    for mi, method in enumerate(methods):
+                        y = self._pair_g2_vs_power(f"H{m}{row[0]}", f"H{n}{row[1]}", method)
+                        if y is None:
+                            continue
+                        mk, ls = _method_style(method, mi, nm, base_marker='s')
+                        ax.plot(self.I0, y, marker=mk, ls=ls,
+                                color=self.ccolor.get((m, n), '#1f77b4'), ms=6, lw=1.6)
+                        drew = True
+                    if drew:
+                        ax.grid(True, alpha=0.25)
+                        self._g2_zones(ax, ylim)
                         ax.set_title(rf"cross $g^{{(2)}}_{{{m}{n}}}$ ({row})", fontsize=12)
                     else:
                         ax.set_visible(False)
@@ -978,20 +1180,30 @@ class PowerScanAnalyzer:
                 ax.set_xlabel(r"Pump power $P$ (mW)")
         for i in range(axes.shape[0]):
             if axes[i, 0].get_visible():
-                axes[i, 0].set_ylabel(r"$g^{(2)}(0)$")
+                axes[i, 0].set_ylabel(r"$g^{(2)}$")
         header = self._header_text(max_chars=max(80, int(figsize[0] * 11)))
         nlines = header.count("\n") + 1
-        fig.suptitle(r"$g^{(2)}(0)$ vs pump power — every detector pair",
+        fig.suptitle(r"$g^{(2)}$ vs pump power — grid of detector pairs",
                      fontsize=18, y=0.998, va='top')
         fig.text(0.5, 0.973 if nlines >= 2 else 0.965, header, ha='center', va='top',
                  fontsize=10, color='#555555')
+        if nm > 1:
+            fig.legend(handles=self._method_legend_handles(methods), loc='upper right',
+                       bbox_to_anchor=(0.99, 0.998), ncol=nm, frameon=True,
+                       fontsize=10, framealpha=0.92, edgecolor='0.7', title='g$^{(2)}$ method')
         fig.subplots_adjust(top=0.925 if nlines >= 2 else 0.93, hspace=0.34, wspace=0.22,
                             left=0.06, right=0.98, bottom=0.05)
         return fig, axes
 
-    def plot_R_grid_vs_power(self, ylim=None, figsize=(16, 15), dpi=None):
+    def plot_R_grid_vs_power(self, ylim=None, figsize=(16, 15), dpi=None, methods=None):
         """Grid of Cauchy-Schwarz ``R`` **vs pump power**, one panel per cross pair
-        and arm combination (TT, TR, RT, RR). Returns ``(fig, axes)``."""
+        and arm combination (TT, TR, RT, RR).
+
+        ``methods`` accepts several g^(2) methods; every method is overlaid in the
+        SAME panel (colour = pair, marker / line style = method). Returns
+        ``(fig, axes)``."""
+        methods = self._methods(methods)
+        nm = len(methods)
         hs = list(self.harmonics)
         pairs = [(hs[i], hs[j]) for i in range(len(hs)) for j in range(i + 1, len(hs))]
         ncol = max(len(pairs), 1)
@@ -1004,15 +1216,22 @@ class PowerScanAnalyzer:
                     ax.set_visible(False)
                     continue
                 m, n = pairs[j]
-                R = self._pair_R_vs_power(
-                    (f"H{m}{row[0]}", f"H{n}{row[1]}"),
-                    (f"H{m}R", f"H{m}T"), (f"H{n}R", f"H{n}T"))
-                if R is None:
+                drew = False
+                for mi, method in enumerate(methods):
+                    R = self._pair_R_vs_power(
+                        (f"H{m}{row[0]}", f"H{n}{row[1]}"),
+                        (f"H{m}R", f"H{m}T"), (f"H{n}R", f"H{n}T"), method=method)
+                    if R is None:
+                        continue
+                    mk, ls = _method_style(method, mi, nm, base_marker='s')
+                    ax.plot(self.I0, R, marker=mk, ls=ls,
+                            color=self.ccolor.get((m, n), '#1f77b4'), ms=6, lw=1.6)
+                    drew = True
+                if not drew:
                     ax.set_visible(False)
                     continue
-                ax.plot(self.I0, R, 's-', color=self.ccolor.get((m, n), '#1f77b4'),
-                        ms=6, lw=1.6)
-                self._grid_ax_decor(ax, ylim)
+                ax.grid(True, alpha=0.25)
+                self._R_zones(ax, ylim)
                 ax.set_title(rf"$R_{{{m}{n}}}$ ({row})", fontsize=12)
                 if ri == len(_CROSS_ROWS) - 1:
                     ax.set_xlabel(r"Pump power $P$ (mW)")
@@ -1024,13 +1243,29 @@ class PowerScanAnalyzer:
                      fontsize=18, y=0.998, va='top')
         fig.text(0.5, 0.967 if nlines >= 2 else 0.96, header, ha='center', va='top',
                  fontsize=10, color='#555555')
+        if nm > 1:
+            fig.legend(handles=self._method_legend_handles(methods), loc='upper right',
+                       bbox_to_anchor=(0.99, 0.998), ncol=nm, frameon=True,
+                       fontsize=10, framealpha=0.92, edgecolor='0.7', title='g$^{(2)}$ method')
         fig.subplots_adjust(top=0.915 if nlines >= 2 else 0.92, hspace=0.34, wspace=0.22,
                             left=0.06, right=0.98, bottom=0.06)
         return fig, axes
 
     def plot_g2_collapse(self, ax=None, slope='local', include_cross=True, show_mean=True,
-                         harmonics=None, pairs=None, xlim=None, ylim=(0, 0.015), dpi=None):
-        """(g^(2)_n - 1)/K^2(n) vs I_0 — all harmonics should COLLAPSE onto g2_0 - 1."""
+                         harmonics=None, pairs=None, xlim=None, ylim=(0, 0.015), dpi=None,
+                         methods=None):
+        """(g^(2)_n - 1)/K^2(n) vs I_0 — all harmonics should COLLAPSE onto g2_0 - 1.
+
+        ``methods`` accepts several g^(2) methods; more than one (and no ``ax``) draws
+        the collapse once per method, side-by-side and sharing the y-axis."""
+        methods = self._methods(methods)
+        if len(methods) > 1 and ax is None:
+            return self._row_by_method(
+                self.plot_g2_collapse, methods,
+                r"Rescaled collapse $\;\to\; g^{(2)}_0 - 1 = \sigma^2$", dpi=dpi,
+                slope=slope, include_cross=include_cross, show_mean=show_mean,
+                harmonics=harmonics, pairs=pairs, xlim=xlim, ylim=ylim)
+        method = methods[0]
         fig, ax, own = self._ax(ax, dpi=dpi)
         if own:
             self._ylim['collapse'] = ylim
@@ -1038,22 +1273,25 @@ class PowerScanAnalyzer:
         for n in self.harmonics:
             if n not in keep_h:
                 continue
-            ax.plot(self.I0, self.collapse_auto(n, slope), 'o-', color=self.hcolor[n], ms=7,
-                    label=rf"$H_{n}$ auto $/K^2$")
+            ax.plot(self.I0, self.collapse_auto(n, slope, method=method), 'o-',
+                    color=self.hcolor[n], ms=7, label=rf"$H_{n}$ auto $/K^2$")
         if include_cross:
             for (m, n) in self.g2_cross:
                 if not self._keep_pair(m, n, keep_h, keep_p):
                     continue
-                ax.plot(self.I0, self.collapse_cross(m, n, slope), 's--', color=self.ccolor[(m, n)],
+                ax.plot(self.I0, self.collapse_cross(m, n, slope, method=method), 's--',
+                        color=self.ccolor[(m, n)],
                         ms=6, lw=1.6, label=rf"$H_{m}H_{n}$ cross $/K_mK_n$")
         extra_h, extra_l = [], []
         if show_mean:
             mean, std = self.inferred_g2_0(slope, harmonics=harmonics,
-                                           pairs=(pairs if include_cross else []))
+                                           pairs=(pairs if include_cross else []),
+                                           method=method)
             ax.plot(self.I0, mean, 'k-', lw=2.8, label=r"mean $= g^{(2)}_0 - 1$")
             ax.fill_between(self.I0, mean - std, mean + std, color='k', alpha=0.13)
             extra_h.append(Patch(facecolor='k', alpha=0.13))
             extra_l.append(r"$\pm1\sigma$ across harmonics")
+        ax.axhline(0, color='k', ls='--', lw=1.6)
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
         ax.set_ylabel(r"$\left(g^{(2)}_n - 1\right)/K^2(n)$")
         if xlim is not None:
@@ -1087,7 +1325,7 @@ class PowerScanAnalyzer:
         fig, axes = plt.subplots(2, 2, figsize=(18, 14), dpi=dpi or _fit_dpi(18))
         self.plot_g2_vs_power(ax=axes[0, 0], include_cross=True, harmonics=harmonics,
                               pairs=pairs, ylim=g2_ylim)
-        axes[0, 0].set_title(r"(1) $g^{(2)}(0)$ vs pump power", fontsize=15)
+        axes[0, 0].set_title(r"(1) $g^{(2)}$ vs pump power", fontsize=15)
         self.plot_g2_collapse(ax=axes[0, 1], slope=slope, harmonics=harmonics, pairs=pairs,
                               ylim=collapse_ylim)
         axes[0, 1].set_title(r"(2) Rescaled collapse $\to g^{(2)}_0 - 1 = \sigma^2$", fontsize=15)
@@ -1145,6 +1383,63 @@ class PowerScanComparison:
         hs = list(harmonics or self.harmonics)
         return [(hs[i], hs[j]) for i in range(len(hs)) for j in range(i + 1, len(hs))]
 
+    # ---------------- sub-title (shared acquisition context) ----------------
+
+    def _subtitle_bits(self):
+        """The metadata shared by the compared scans (sample, filter, ..., plus the
+        number of scans, the overall power range and the integration window). The
+        per-scan difference is the legend, so it is not repeated here."""
+        a0 = next(iter(self.scans.values()))
+        r0 = a0.runs[0]
+        bits = []
+        if getattr(r0, 'material', None) and r0.material != 'Unknown':
+            bits.append(rf"Sample: {r0.material}")
+        if getattr(r0, 'wavelength_nm', None):
+            bits.append(rf"$\lambda_L = {r0.wavelength_nm:g}$ nm")
+        if getattr(r0, 'filter_label', None):
+            bits.append(rf"Filter: {r0.filter_label}")
+        bits.append(rf"{len(self.scans)} scans ({', '.join(self.labels)})")
+        pmin = min(float(a.I0.min()) for a in self.scans.values())
+        pmax = max(float(a.I0.max()) for a in self.scans.values())
+        bits.append(rf"$P = {pmin:g}$--${pmax:g}$ mW")
+        bits.append(rf"$\tau_{{in}} = {a0.tau_in_ns:g}$ ns")
+        return bits
+
+    def _header_text(self, max_chars=110):
+        """The sub-title greedily wrapped so no line exceeds ``max_chars``."""
+        bits = self._subtitle_bits()
+        sep = "  |  "
+        one = sep.join(bits)
+        if len(one) <= max_chars or len(bits) < 2:
+            return one
+        lines, cur = [], ""
+        for b in bits:
+            cand = b if not cur else cur + sep + b
+            if cur and len(cand) > max_chars:
+                lines.append(cur)
+                cur = b
+            else:
+                cur = cand
+        if cur:
+            lines.append(cur)
+        return "\n".join(lines)
+
+    def _title_block(self, fig, title, subtitle=None, title_fs=15):
+        """Centred descriptive title + grey metadata sub-title; returns the ``top``
+        margin to leave for the axes so neither ever overlaps the plot."""
+        header = subtitle if subtitle is not None else self._header_text(
+            max_chars=max(40, int(fig.get_size_inches()[0] * 9)))
+        lines = header.split("\n") if header else []
+        y = 0.965
+        fig.text(0.5, y, title, ha='center', va='top', fontsize=title_fs,
+                 transform=fig.transFigure)
+        y -= 0.058
+        for ln in lines:
+            fig.text(0.5, y, ln, ha='center', va='top', fontsize=8.5, color='#555555',
+                     transform=fig.transFigure)
+            y -= 0.034
+        return max(y - 0.012, 0.72)
+
     def _legend_side(self, fig, handles, fontsize=9):
         """Scan-colour legend to the right of the figure (one entry per scan)."""
         max_len = max((len(h.get_label()) for h in handles), default=8)
@@ -1161,11 +1456,9 @@ class PowerScanComparison:
 
         ``legend='scans'``: one entry per scan (colour only) on the right; marker /
         linestyle inside the axes encodes harmonic or R pair. ``legend='none'``: for
-        dashboard sub-panels."""
-        if own:
-            fig.suptitle(title, fontsize=15, y=0.96)
-            if subtitle:
-                ax.set_title(subtitle, fontsize=9.5, color='#555555', pad=8)
+        dashboard sub-panels. The descriptive title sits on top with the shared
+        acquisition metadata as a grey sub-title just below it (``subtitle`` overrides
+        the auto-generated metadata)."""
         if legend == 'none':
             if own:
                 fig.subplots_adjust(left=0.12, right=0.98, top=0.88, bottom=0.12)
@@ -1183,18 +1476,27 @@ class PowerScanComparison:
             ax.legend(handles=inset, loc='upper left', fontsize=8, framealpha=0.92,
                       edgecolor='0.7', title=inset_title, title_fontsize=8)
         if own:
-            fig.subplots_adjust(left=0.12, right=axes_right, top=0.88, bottom=0.12)
+            top = self._title_block(fig, title, subtitle)
+            fig.subplots_adjust(left=0.12, right=axes_right, top=top, bottom=0.12)
         return fig, ax
 
-    def _finish_grid(self, fig, title, marker='o', top=0.94, **adjust_kw):
-        """Shared scan legend + margins for multi-panel comparison grids."""
+    def _finish_grid(self, fig, title, marker='o', **adjust_kw):
+        """Shared scan legend + descriptive title + grey sub-title + margins for the
+        multi-panel comparison grids. ``top`` is computed from the sub-title so the
+        first panel row never collides with the title block. Returns
+        ``(fig, axes_right)`` so the caller can place an extra legend clear of the
+        scan legend."""
         axes_right = self._legend_side(fig, self._scan_legend_handles(marker), fontsize=10)
-        fig.suptitle(title, fontsize=16, y=0.98, va='top')
-        kw = dict(top=top, hspace=0.36, wspace=0.22,
-                  left=0.06, right=axes_right, bottom=0.06)
+        header = self._header_text(max_chars=max(80, int(fig.get_size_inches()[0] * 9)))
+        nlines = header.count("\n") + 1
+        fig.suptitle(title, fontsize=17, y=0.998, va='top')
+        fig.text(0.5, 0.973 if nlines >= 2 else 0.965, header, ha='center', va='top',
+                 fontsize=10, color='#555555')
+        kw = dict(top=0.925 if nlines >= 2 else 0.935, hspace=0.36, wspace=0.22,
+                  left=0.06, right=axes_right, bottom=0.05)
         kw.update(adjust_kw)
         fig.subplots_adjust(**kw)
-        return fig
+        return fig, axes_right
 
     def _hmark(self, i):
         return ['o', 's', '^', 'D', 'v', 'P'][i % 6]
@@ -1222,31 +1524,105 @@ class PowerScanComparison:
                          ms=6, lw=1.8, label=rf"$R_{{{m}{n}}}$")
                 for i, (m, n) in enumerate(pairs)]
 
+    def _methods(self, methods):
+        """Normalise ``methods`` for a comparison; ``None`` -> the primary method of
+        the first scan's analyzer."""
+        if methods is None:
+            return [next(iter(self.scans.values())).g2_method]
+        if isinstance(methods, str):
+            return [methods]
+        return list(methods)
+
+    def _row_by_method(self, plot_fn, methods, title, marker='o', inset_harmonics=None,
+                       inset_pairs=None, col_figsize=(6.5, 4.5), dpi=None, **kw):
+        """One column per g^(2) method (each overlaying every scan), sharing the
+        y-axis — the comparison counterpart of
+        :meth:`PowerScanAnalyzer._row_by_method`. The scan-colour legend sits once on
+        the right; a small marker/line-style key (``inset_harmonics`` or
+        ``inset_pairs``) sits on the first column. Any other kwargs are forwarded to
+        ``plot_fn`` for every column."""
+        ncol = len(methods)
+        w = col_figsize[0] * ncol
+        ylim = kw.get('ylim')
+        if ylim is None:
+            ylim = _dry_run_ylim(plot_fn, methods, {**kw, 'ylim': None, 'legend': 'none'})
+        fig, axes = plt.subplots(1, ncol, figsize=(w, col_figsize[1]),
+                                 dpi=dpi or _fit_dpi(w), sharey=True, squeeze=False)
+        for j, m in enumerate(methods):
+            plot_fn(ax=axes[0, j], methods=[m], legend='none', **{**kw, 'ylim': ylim})
+            axes[0, j].set_title(rf"{_method_label(m)} $g^{{(2)}}$", fontsize=13, pad=6)
+            axes[0, j].tick_params(labelleft=True)     # keep tick numbers on shared y
+            if j > 0:
+                axes[0, j].set_ylabel("")
+        axes_right = self._legend_side(fig, self._scan_legend_handles(marker), fontsize=10)
+        if inset_pairs is not None:
+            inset, inset_title = self._pair_marker_handles(inset_pairs), 'Pair'
+        elif inset_harmonics is not None:
+            inset, inset_title = self._harmonic_marker_handles(inset_harmonics), 'Harmonic'
+        else:
+            inset = None
+        if inset:
+            axes[0, 0].legend(handles=inset, loc='upper left', fontsize=8, framealpha=0.92,
+                              edgecolor='0.7', title=inset_title, title_fontsize=8)
+        header = self._header_text(max_chars=max(60, int(w * 9)))
+        lines = header.split("\n")
+        y = 0.978
+        fig.text(0.5, y, title, ha='center', va='top', fontsize=16,
+                 transform=fig.transFigure)
+        y -= 0.05
+        for ln in lines:
+            fig.text(0.5, y, ln, ha='center', va='top', fontsize=8.5, color='#555555',
+                     transform=fig.transFigure)
+            y -= 0.03
+        top = max(y - 0.065, 0.68)        # extra gap leaves room for the column titles
+        fig.subplots_adjust(top=top, bottom=0.13, left=0.07, right=axes_right, wspace=0.13)
+        return fig, axes
+
     def plot_g2_vs_power(self, ax=None, harmonics=None, xlim=None, ylim=(0.9, 1.6),
-                         dpi=None, legend='scans'):
-        """Overlay g^(2)_nn(P) for every scan (colour = scan, marker = harmonic)."""
+                         dpi=None, legend='scans', methods=None):
+        """Overlay g^(2)_nn(P) for every scan (colour = scan, marker = harmonic).
+
+        ``methods`` accepts several g^(2) methods; more than one (and no ``ax``) draws
+        the comparison once per method, side-by-side and sharing the y-axis."""
+        methods = self._methods(methods)
+        if len(methods) > 1 and ax is None:
+            return self._row_by_method(
+                self.plot_g2_vs_power, methods, r"$g^{(2)}$ vs pump power — comparison",
+                marker='o', inset_harmonics=(harmonics or self.harmonics),
+                harmonics=harmonics, xlim=xlim, ylim=ylim, dpi=dpi)
+        method = methods[0]
         fig, ax, own = self._ax(ax, dpi=dpi)
         hs = harmonics or self.harmonics
         for lab, a in self.scans.items():
             for i, n in enumerate(hs):
                 if n not in a.harmonics:
                     continue
-                ax.plot(a.I0, a.g2_auto[n], marker=self._hmark(i), ls='-',
+                ax.plot(a.I0, a.g2_auto_of(n, method), marker=self._hmark(i), ls='-',
                         color=self.color[lab], ms=6)
-        ax.axhline(1.0, color='#313131', ls='--', lw=1.2, alpha=0.7)
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
-        ax.set_ylabel(r"$g^{(2)}(0)$")
+        ax.set_ylabel(r"$g^{(2)}$")
         if xlim is not None:
             ax.set_xlim(xlim)
-        if ylim is not None:
-            ax.set_ylim(ylim)
-        return self._finish(fig, ax, own, r"$g^{(2)}(0)$ vs pump power — comparison",
+        PowerScanAnalyzer._g2_zones(ax, ylim)
+        ax.grid(True, alpha=0.25)
+        return self._finish(fig, ax, own, r"$g^{(2)}$ vs pump power — comparison",
                             harmonics=hs if legend == 'scans' else None, legend=legend)
 
     def plot_R_vs_power(self, ax=None, harmonics=None, pairs=None, xlim=None, ylim=None,
-                        dpi=None, legend='scans'):
+                        dpi=None, legend='scans', methods=None):
         """Overlay Cauchy-Schwarz ``R`` vs pump power for every scan (colour = scan,
-        marker / linestyle = cross pair). Companion to :meth:`plot_g2_vs_power`."""
+        marker / linestyle = cross pair). Companion to :meth:`plot_g2_vs_power`.
+
+        ``methods`` accepts several g^(2) methods; more than one (and no ``ax``) draws
+        the comparison once per method, side-by-side and sharing the y-axis."""
+        methods = self._methods(methods)
+        if len(methods) > 1 and ax is None:
+            return self._row_by_method(
+                self.plot_R_vs_power, methods,
+                r"Cauchy-Schwarz $R$ vs pump power — comparison", marker='s',
+                inset_pairs=self._cross_pairs(list(harmonics or self.harmonics)),
+                harmonics=harmonics, pairs=pairs, xlim=xlim, ylim=ylim, dpi=dpi)
+        method = methods[0]
         fig, ax, own = self._ax(ax, dpi=dpi)
         hs = list(harmonics or self.harmonics)
         cross = self._cross_pairs(hs)
@@ -1260,16 +1636,18 @@ class PowerScanComparison:
             for pi, (m, n) in enumerate(cross):
                 if (m, n) not in a.g2_cross:
                     continue
-                ax.plot(a.I0, a.R_cross(m, n), marker=self._hmark(pi), ls=self._hls(pi),
-                        color=self.color[lab], ms=6, lw=1.8)
+                ax.plot(a.I0, a.R_cross(m, n, method), marker=self._hmark(pi),
+                        ls=self._hls(pi), color=self.color[lab], ms=6, lw=1.8)
                 drew = True
-        ax.axhline(1.0, color='#313131', ls='--', lw=1.2, alpha=0.7)
         ax.set_xlabel(r"Pump power $P \propto I_0$ (mW)")
         ax.set_ylabel(r"$R = g^{(2)\,2}_{mn} / (g^{(2)}_{mm}\, g^{(2)}_{nn})$")
         if xlim is not None:
             ax.set_xlim(xlim)
-        if ylim is not None:
+        if drew:
+            PowerScanAnalyzer._R_zones(ax, ylim)
+        elif ylim is not None:
             ax.set_ylim(ylim)
+        ax.grid(True, alpha=0.25)
         if not drew and own:
             ax.text(0.5, 0.5, "No cross-pair $R$ data", transform=ax.transAxes,
                     ha='center', va='center', color='0.45')
@@ -1304,11 +1682,15 @@ class PowerScanComparison:
     # ---------------- per-detector-pair grids vs power (overlay every scan) ----------------
 
     def plot_g2_grid_vs_power(self, harmonics=None, ylim=None, figsize=(16, 18),
-                              dpi=None):
+                              dpi=None, methods=None):
         """Grid of g^(2)(0) vs pump power, one panel per detector pair, OVERLAYING every
         scan (colour = scan). Row 0 holds the auto-correlations ``H_{nn}`` (R&T); the
         next four rows are the cross pairs in each arm combination (TT, TR, RT, RR).
-        Returns ``(fig, axes)``."""
+
+        ``methods`` accepts several g^(2) methods; every method is overlaid in the SAME
+        panel (colour = scan, marker / line style = method). Returns ``(fig, axes)``."""
+        methods = self._methods(methods)
+        nm = len(methods)
         hs = list(harmonics or self.harmonics)
         pairs = [(hs[i], hs[j]) for i in range(len(hs)) for j in range(i + 1, len(hs))]
         ncol = max(len(hs), len(pairs), 1)
@@ -1322,16 +1704,17 @@ class PowerScanComparison:
                 for lab, a in self.scans.items():
                     if n not in a.harmonics:
                         continue
-                    y = a._pair_g2_vs_power(f"H{n}R", f"H{n}T")
-                    if y is None:
-                        continue
-                    ax.plot(a.I0, y, 'o-', color=self.color[lab], ms=5, lw=1.6)
-                    drew = True
+                    for mi, method in enumerate(methods):
+                        y = a._pair_g2_vs_power(f"H{n}R", f"H{n}T", method)
+                        if y is None:
+                            continue
+                        mk, ls = _method_style(method, mi, nm, base_marker='o')
+                        ax.plot(a.I0, y, marker=mk, ls=ls, color=self.color[lab],
+                                ms=5, lw=1.6)
+                        drew = True
                 if drew:
-                    ax.axhline(1.0, color='#313131', ls='--', lw=1.0, alpha=0.6)
                     ax.grid(True, alpha=0.25)
-                    if ylim is not None:
-                        ax.set_ylim(ylim)
+                    PowerScanAnalyzer._g2_zones(ax, ylim)
                     ax.set_title(rf"auto $g^{{(2)}}_{{{n}{n}}}$ (RT)", fontsize=12)
                 else:
                     ax.set_visible(False)
@@ -1343,16 +1726,17 @@ class PowerScanComparison:
                     m, n = pairs[j]
                     drew = False
                     for lab, a in self.scans.items():
-                        y = a._pair_g2_vs_power(f"H{m}{row[0]}", f"H{n}{row[1]}")
-                        if y is None:
-                            continue
-                        ax.plot(a.I0, y, 's-', color=self.color[lab], ms=5, lw=1.6)
-                        drew = True
+                        for mi, method in enumerate(methods):
+                            y = a._pair_g2_vs_power(f"H{m}{row[0]}", f"H{n}{row[1]}", method)
+                            if y is None:
+                                continue
+                            mk, ls = _method_style(method, mi, nm, base_marker='s')
+                            ax.plot(a.I0, y, marker=mk, ls=ls, color=self.color[lab],
+                                    ms=5, lw=1.6)
+                            drew = True
                     if drew:
-                        ax.axhline(1.0, color='#313131', ls='--', lw=1.0, alpha=0.6)
                         ax.grid(True, alpha=0.25)
-                        if ylim is not None:
-                            ax.set_ylim(ylim)
+                        PowerScanAnalyzer._g2_zones(ax, ylim)
                         ax.set_title(rf"cross $g^{{(2)}}_{{{m}{n}}}$ ({row})", fontsize=12)
                     else:
                         ax.set_visible(False)
@@ -1363,16 +1747,25 @@ class PowerScanComparison:
                 ax.set_xlabel(r"Pump power $P$ (mW)")
         for i in range(axes.shape[0]):
             if axes[i, 0].get_visible():
-                axes[i, 0].set_ylabel(r"$g^{(2)}(0)$")
-        self._finish_grid(fig, r"$g^{(2)}(0)$ vs pump power — every detector pair (comparison)",
-                          marker='o', top=0.96)
+                axes[i, 0].set_ylabel(r"$g^{(2)}$")
+        _, axes_right = self._finish_grid(
+            fig, r"$g^{(2)}$ vs pump power — every detector pair (comparison)", marker='o')
+        if nm > 1:
+            fig.legend(handles=PowerScanAnalyzer._method_legend_handles(methods),
+                       loc='upper right', bbox_to_anchor=(axes_right, 0.998), ncol=1,
+                       frameon=True, fontsize=9, framealpha=0.92, edgecolor='0.7',
+                       title='g$^{(2)}$ method')
         return fig, axes
 
     def plot_R_grid_vs_power(self, harmonics=None, ylim=None, figsize=(16, 15),
-                             dpi=None):
+                             dpi=None, methods=None):
         """Grid of Cauchy-Schwarz ``R`` vs pump power, one panel per cross pair and arm
-        combination (TT, TR, RT, RR), OVERLAYING every scan (colour = scan). Returns
-        ``(fig, axes)``."""
+        combination (TT, TR, RT, RR), OVERLAYING every scan (colour = scan).
+
+        ``methods`` accepts several g^(2) methods; every method is overlaid in the SAME
+        panel (colour = scan, marker / line style = method). Returns ``(fig, axes)``."""
+        methods = self._methods(methods)
+        nm = len(methods)
         hs = list(harmonics or self.harmonics)
         pairs = [(hs[i], hs[j]) for i in range(len(hs)) for j in range(i + 1, len(hs))]
         ncol = max(len(pairs), 1)
@@ -1387,27 +1780,34 @@ class PowerScanComparison:
                 m, n = pairs[j]
                 drew = False
                 for lab, a in self.scans.items():
-                    R = a._pair_R_vs_power(
-                        (f"H{m}{row[0]}", f"H{n}{row[1]}"),
-                        (f"H{m}R", f"H{m}T"), (f"H{n}R", f"H{n}T"))
-                    if R is None:
-                        continue
-                    ax.plot(a.I0, R, 's-', color=self.color[lab], ms=5, lw=1.6)
-                    drew = True
+                    for mi, method in enumerate(methods):
+                        R = a._pair_R_vs_power(
+                            (f"H{m}{row[0]}", f"H{n}{row[1]}"),
+                            (f"H{m}R", f"H{m}T"), (f"H{n}R", f"H{n}T"), method=method)
+                        if R is None:
+                            continue
+                        mk, ls = _method_style(method, mi, nm, base_marker='s')
+                        ax.plot(a.I0, R, marker=mk, ls=ls, color=self.color[lab],
+                                ms=5, lw=1.6)
+                        drew = True
                 if not drew:
                     ax.set_visible(False)
                     continue
-                ax.axhline(1.0, color='#313131', ls='--', lw=1.0, alpha=0.6)
                 ax.grid(True, alpha=0.25)
-                if ylim is not None:
-                    ax.set_ylim(ylim)
+                PowerScanAnalyzer._R_zones(ax, ylim)
                 ax.set_title(rf"$R_{{{m}{n}}}$ ({row})", fontsize=12)
                 if ri == len(_CROSS_ROWS) - 1:
                     ax.set_xlabel(r"Pump power $P$ (mW)")
                 if j == 0:
                     ax.set_ylabel(r"$R$")
-        self._finish_grid(fig, r"Cauchy-Schwarz $R$ vs pump power — every detector pair (comparison)",
-                          marker='s', top=0.96)
+        _, axes_right = self._finish_grid(
+            fig, r"Cauchy-Schwarz $R$ vs pump power — every detector pair (comparison)",
+            marker='s')
+        if nm > 1:
+            fig.legend(handles=PowerScanAnalyzer._method_legend_handles(methods),
+                       loc='upper right', bbox_to_anchor=(axes_right, 0.998), ncol=1,
+                       frameon=True, fontsize=9, framealpha=0.92, edgecolor='0.7',
+                       title='g$^{(2)}$ method')
         return fig, axes
 
     def plot_intensity_scaling(self, ax=None, harmonics=None, xlim=None, ylim=None,
@@ -1437,13 +1837,25 @@ class PowerScanComparison:
 
     def plot_inferred_sigma2(self, ax=None, slope='local', harmonics=None,
                              include_cross=True, xlim=None, ylim=None, dpi=None,
-                             legend='scans'):
+                             legend='scans', methods=None):
         """Overlay the inferred pump excess sigma^2 = g2_0 - 1 (mean over harmonics)
-        for every scan, with its 1-sigma band — the headline comparison."""
+        for every scan, with its 1-sigma band — the headline comparison.
+
+        ``methods`` accepts several g^(2) methods; more than one (and no ``ax``) draws
+        the comparison once per method, side-by-side and sharing the y-axis."""
+        methods = self._methods(methods)
+        if len(methods) > 1 and ax is None:
+            return self._row_by_method(
+                self.plot_inferred_sigma2, methods,
+                r"Inferred pump excess $\sigma^2$ — comparison", marker='o',
+                slope=slope, harmonics=harmonics, include_cross=include_cross,
+                xlim=xlim, ylim=ylim, dpi=dpi)
+        method = methods[0]
         fig, ax, own = self._ax(ax, dpi=dpi)
         for lab, a in self.scans.items():
             mean, std = a.inferred_g2_0(slope, harmonics=harmonics,
-                                        pairs=(None if include_cross else []))
+                                        pairs=(None if include_cross else []),
+                                        method=method)
             c = self.color[lab]
             ax.plot(a.I0, mean, 'o-', color=c, ms=6)
             ax.fill_between(a.I0, mean - std, mean + std, color=c, alpha=0.13)
@@ -1464,7 +1876,7 @@ class PowerScanComparison:
         fig, axes = plt.subplots(2, 2, figsize=(18, 14), dpi=dpi or _fit_dpi(18))
         hs = harmonics or self.harmonics
         self.plot_g2_vs_power(ax=axes[0, 0], harmonics=hs, ylim=g2_ylim, legend='none')
-        axes[0, 0].set_title(r"(1) $g^{(2)}(0)$ vs pump power", fontsize=15)
+        axes[0, 0].set_title(r"(1) $g^{(2)}$ vs pump power", fontsize=15)
         self.plot_inferred_sigma2(ax=axes[0, 1], slope=slope, harmonics=hs,
                                   ylim=sigma2_ylim, legend='none')
         axes[0, 1].set_title(r"(2) Inferred $\sigma^2 = g^{(2)}_0 - 1$", fontsize=15)
@@ -1479,8 +1891,12 @@ class PowerScanComparison:
         axes[1, 1].legend(handles=self._harmonic_marker_handles(hs), loc='upper left',
                           fontsize=7, framealpha=0.92, edgecolor='0.7',
                           title='Harmonic', title_fontsize=7)
-        fig.suptitle("Power-scan comparison", fontsize=19, y=0.98)
+        header = self._header_text(max_chars=max(80, int(18 * 9)))
+        nlines = header.count("\n") + 1
+        fig.suptitle("Power-scan comparison", fontsize=19, y=0.985, va='top')
+        fig.text(0.5, 0.957 if nlines >= 2 else 0.95, header, ha='center', va='top',
+                 fontsize=11, color='#555555')
         axes_right = self._legend_side(fig, self._scan_legend_handles('o'), fontsize=10)
-        fig.subplots_adjust(top=0.92, hspace=0.28, wspace=0.28,
+        fig.subplots_adjust(top=0.90 if nlines >= 2 else 0.915, hspace=0.28, wspace=0.28,
                             left=0.07, right=axes_right, bottom=0.08)
         return fig, axes
